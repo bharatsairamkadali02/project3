@@ -1,3 +1,4 @@
+
 output "instance_id" {
   description = "EC2 instance ID"
   value       = aws_instance.portfolio.id
@@ -14,6 +15,6 @@ output "website_url" {
 }
 
 output "ssm_role_name" {
-  description = "IAM role attached to EC2 for Systems Manager"
-  value       = aws_iam_role.ec2_ssm_role.name
+  description = "Existing IAM role attached to EC2 for Systems Manager"
+  value       = data.aws_iam_role.ec2_ssm_role.name
 }
