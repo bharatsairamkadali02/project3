@@ -184,7 +184,7 @@ jobs:
           REMOTE_SCRIPT=$(cat <<'REMOTE'
           set -eu
 
-          REPO_URL="https://github.com/KADALIBHARATsairam/portfolio_CICD.git"
+          REPO_URL="https://github.com/bharatsairamkadali02/project3.git"
           BRANCH="main"
           REPO_DIR="/opt/portfolio"
           WEB_ROOT="/var/www/html"
