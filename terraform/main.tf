@@ -147,17 +147,6 @@ data "aws_iam_instance_profile" "portfolio_profile" {
   name = "${var.project_name}-instance-profile"
 }
 
-
-resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role       = aws_iam_role.ec2_ssm_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_instance_profile" "portfolio_profile" {
-  name = "${var.project_name}-instance-profile"
-  role = aws_iam_role.ec2_ssm_role.name
-}
-
 # 7. Create the Ubuntu EC2 instance.
 resource "aws_instance" "portfolio" {
   ami                         = data.aws_ami.ubuntu.id
