@@ -1,3 +1,4 @@
+
 name: Deploy Portfolio to AWS EC2
 
 on:
@@ -23,34 +24,32 @@ jobs:
       PROJECT_NAME: portfolio-cicd
 
     steps:
-      # 1. Checkout the repository on the GitHub Actions runner.
+      # 1. Checkout the current repository.
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Validate the website before provisioning or deployment.
+      # 2. Validate website files before deployment.
       - name: Validate website files
         shell: bash
         run: |
           set -euo pipefail
 
-          REQUIRED_FILES=(
-            "index.html"
-            "style.css"
-            "script.js"
-            "profile.png"
-            "project1.jpg"
-            "project2.jpg"
-          )
-
-          for FILE in "${REQUIRED_FILES[@]}"; do
+          for FILE in \
+            index.html \
+            style.css \
+            script.js \
+            profile.png \
+            project1.jpg \
+            project2.jpg
+          do
             if [ ! -s "$FILE" ]; then
-              echo "ERROR: $FILE is missing or empty in the repository root."
-              echo "Restore the website files and commit them to main."
+              echo "ERROR: $FILE is missing or empty."
+              echo "Restore the files in the project3 repository."
               exit 1
             fi
           done
 
-          echo "All required website files are present."
+          echo "All required portfolio files are present."
 
       # 3. Install Terraform.
       - name: Setup Terraform
@@ -58,7 +57,7 @@ jobs:
         with:
           terraform_version: 1.10.5
 
-      # 4. Configure AWS using your existing repository secrets.
+      # 4. Authenticate to AWS using repository secrets.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -66,11 +65,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 5. Confirm the AWS account identity.
+      # 5. Verify AWS identity.
       - name: Verify AWS credentials
         run: aws sts get-caller-identity
 
-      # 6. Find the existing project EC2 or provision one.
+      # 6. Find EC2 or create infrastructure if needed.
       - name: Find or create EC2
         id: ec2
         shell: bash
@@ -84,9 +83,9 @@ jobs:
             --query 'Reservations[].Instances[].InstanceId | [0]' \
             --output text)
 
-          if [ "${INSTANCE_ID}" = "None" ] || [ -z "${INSTANCE_ID}" ]; then
-            echo "No existing project EC2 was found."
-            echo "Creating AWS infrastructure with Terraform."
+          if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "No existing project EC2 found."
+            echo "Creating infrastructure with Terraform."
 
             cd terraform
 
@@ -112,34 +111,34 @@ jobs:
               --output text)
           fi
 
-          if [ "${INSTANCE_ID}" = "None" ] || [ -z "${INSTANCE_ID}" ]; then
+          if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
             echo "ERROR: Could not find or create EC2."
             exit 1
           fi
 
           STATE=$(aws ec2 describe-instances \
-            --instance-ids "${INSTANCE_ID}" \
+            --instance-ids "$INSTANCE_ID" \
             --query 'Reservations[0].Instances[0].State.Name' \
             --output text)
 
-          if [ "${STATE}" = "stopped" ]; then
+          if [ "$STATE" = "stopped" ]; then
             aws ec2 start-instances \
-              --instance-ids "${INSTANCE_ID}"
-          elif [ "${STATE}" = "stopping" ]; then
+              --instance-ids "$INSTANCE_ID"
+          elif [ "$STATE" = "stopping" ]; then
             aws ec2 wait instance-stopped \
-              --instance-ids "${INSTANCE_ID}"
+              --instance-ids "$INSTANCE_ID"
 
             aws ec2 start-instances \
-              --instance-ids "${INSTANCE_ID}"
+              --instance-ids "$INSTANCE_ID"
           fi
 
           aws ec2 wait instance-running \
-            --instance-ids "${INSTANCE_ID}"
+            --instance-ids "$INSTANCE_ID"
 
-          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
-          echo "Using EC2 instance: ${INSTANCE_ID}"
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "Using EC2 instance: $INSTANCE_ID"
 
-      # 7. Wait for EC2 to become available in Systems Manager.
+      # 7. Wait until EC2 is online in Systems Manager.
       - name: Wait for SSM connection
         env:
           INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
@@ -155,23 +154,24 @@ jobs:
               --query 'InstanceInformationList[0].PingStatus' \
               --output text 2>/dev/null || true)
 
-            if [ "${STATUS}" = "Online" ]; then
+            if [ "$STATUS" = "Online" ]; then
               ONLINE=true
               echo "EC2 is online in Systems Manager."
               break
             fi
 
-            echo "Waiting for SSM registration (${ATTEMPT}/45)..."
+            echo "Waiting for SSM (${ATTEMPT}/45)..."
             sleep 10
           done
 
-          if [ "${ONLINE}" != "true" ]; then
+          if [ "$ONLINE" != "true" ]; then
             echo "ERROR: EC2 did not register with SSM."
-            echo "Check the SSM agent, IAM role, and outbound network."
+            echo "Check the SSM agent, IAM role and outbound networking."
             exit 1
           fi
 
-      # 8. Clone/update the repo and deploy on EC2.
+      # 8. Correct the existing Git remote, pull the right repository,
+      # validate files, and publish them to Nginx.
       - name: Clone or update repository on EC2
         env:
           INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
@@ -179,8 +179,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # This script is executed remotely on EC2 using /bin/sh.
-          # Do not use Bash-only options such as pipefail here.
           REMOTE_SCRIPT=$(cat <<'REMOTE'
           set -eu
 
@@ -189,12 +187,12 @@ jobs:
           REPO_DIR="/opt/portfolio"
           WEB_ROOT="/var/www/html"
 
-          # Ensure first-boot setup has completed.
+          # Wait for EC2 first-boot initialization to finish.
           if command -v cloud-init >/dev/null 2>&1; then
             cloud-init status --wait
           fi
 
-          # Install deployment tools only if one is missing.
+          # Install deployment tools if they are missing.
           if ! command -v git >/dev/null 2>&1 ||
              ! command -v nginx >/dev/null 2>&1 ||
              ! command -v rsync >/dev/null 2>&1 ||
@@ -204,12 +202,19 @@ jobs:
             apt-get install -y git nginx rsync curl
           fi
 
-          # Clone the repository if it does not exist yet.
-          if [ ! -d "${REPO_DIR}/.git" ]; then
-            if [ -d "${REPO_DIR}" ]; then
-              rmdir "${REPO_DIR}" 2>/dev/null || true
+          # IMPORTANT FIX:
+          # If an old repository clone exists, change its origin URL.
+          if [ -d "${REPO_DIR}/.git" ]; then
+            echo "Existing Git clone found."
+            git -C "${REPO_DIR}" remote set-url origin "${REPO_URL}"
+          else
+            if [ -e "${REPO_DIR}" ]; then
+              echo "ERROR: ${REPO_DIR} exists but is not a Git repository."
+              echo "Inspect this directory before retrying."
+              exit 1
             fi
 
+            echo "Cloning the correct project3 repository."
             git clone \
               --depth 1 \
               --branch "${BRANCH}" \
@@ -217,13 +222,17 @@ jobs:
               "${REPO_DIR}"
           fi
 
-          # Fetch and reset to the latest committed main branch.
+          # Fetch from the corrected GitHub repository.
           git -C "${REPO_DIR}" fetch origin "${BRANCH}"
           git -C "${REPO_DIR}" reset --hard "origin/${BRANCH}"
 
-          # Validate remote files BEFORE rsync --delete.
-          # This prevents an empty or incomplete commit from
-          # clearing the existing Nginx document root.
+          echo "Repository now points to:"
+          git -C "${REPO_DIR}" remote get-url origin
+
+          echo "Latest deployed source commit:"
+          git -C "${REPO_DIR}" log -1 --oneline
+
+          # Validate all expected files BEFORE modifying the web root.
           for FILE in \
             index.html \
             style.css \
@@ -233,14 +242,16 @@ jobs:
             project2.jpg
           do
             if [ ! -s "${REPO_DIR}/${FILE}" ]; then
-              echo "ERROR: ${FILE} is missing or empty in ${REPO_DIR}."
-              echo "No files were copied to the Nginx web root."
+              echo "ERROR: ${FILE} is missing or empty."
+              echo "Repository: ${REPO_URL}"
+              echo "No website files were copied to Nginx."
               exit 1
             fi
           done
 
-          # Deploy website files to Nginx.
-          # Exclude Git, workflow, and Terraform files.
+          echo "All required files found on EC2."
+
+          # Deploy the portfolio without copying Git or Terraform files.
           rsync -av \
             --delete \
             --delete-excluded \
@@ -253,17 +264,18 @@ jobs:
             --exclude='*.tfplan' \
             "${REPO_DIR}/" "${WEB_ROOT}/"
 
-          # Validate the configuration and start Nginx.
+          # Validate and reload Nginx.
           nginx -t
           systemctl enable --now nginx
           systemctl reload nginx
 
-          # Verify that Nginx serves an HTML response.
+          # Verify the local HTTP response.
           curl --fail --silent --show-error \
-            http://127.0.0.1/ -o /tmp/portfolio-response.html
+            http://127.0.0.1/ \
+            -o /tmp/portfolio-response.html
 
           if ! grep -qi '<html' /tmp/portfolio-response.html; then
-            echo "ERROR: Nginx did not return expected HTML."
+            echo "ERROR: Nginx did not return the expected HTML."
             exit 1
           fi
 
@@ -271,39 +283,39 @@ jobs:
           REMOTE
           )
 
-          # Safely serialize the multiline script to JSON.
-          jq -n --arg command "${REMOTE_SCRIPT}" \
+          # Convert the remote script into SSM-compatible JSON.
+          jq -n --arg command "$REMOTE_SCRIPT" \
             '{commands: [$command]}' > /tmp/ssm-parameters.json
 
-          # Run deployment commands on the Ubuntu EC2 instance.
+          # Execute the script on EC2.
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Clone and deploy portfolio from GitHub" \
+            --comment "Deploy project3 portfolio from GitHub" \
             --parameters file:///tmp/ssm-parameters.json \
             --query 'Command.CommandId' \
             --output text)
 
-          echo "SSM command ID: ${COMMAND_ID}"
+          echo "SSM command ID: $COMMAND_ID"
 
           COMPLETED=false
 
           for ATTEMPT in $(seq 1 60); do
             STATUS=$(aws ssm get-command-invocation \
-              --command-id "${COMMAND_ID}" \
+              --command-id "$COMMAND_ID" \
               --instance-id "${INSTANCE_ID}" \
               --query 'Status' \
               --output text 2>/dev/null || true)
 
-            if [ "${STATUS}" = "Success" ]; then
+            if [ "$STATUS" = "Success" ]; then
               COMPLETED=true
               break
             fi
 
-            case "${STATUS}" in
+            case "$STATUS" in
               Failed|Cancelled|TimedOut)
                 aws ssm get-command-invocation \
-                  --command-id "${COMMAND_ID}" \
+                  --command-id "$COMMAND_ID" \
                   --instance-id "${INSTANCE_ID}" \
                   --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
                   --output json || true
@@ -311,17 +323,17 @@ jobs:
                 ;;
             esac
 
-            echo "Deployment status: ${STATUS}"
+            echo "Deployment status: $STATUS"
             sleep 5
           done
 
-          if [ "${COMPLETED}" != "true" ]; then
+          if [ "$COMPLETED" != "true" ]; then
             echo "ERROR: Timed out waiting for SSM deployment."
             exit 1
           fi
 
           aws ssm get-command-invocation \
-            --command-id "${COMMAND_ID}" \
+            --command-id "$COMMAND_ID" \
             --instance-id "${INSTANCE_ID}" \
             --query 'StandardOutputContent' \
             --output text
@@ -339,8 +351,8 @@ jobs:
             --query 'Reservations[0].Instances[0].PublicIpAddress' \
             --output text)
 
-          if [ "${PUBLIC_IP}" = "None" ] || [ -z "${PUBLIC_IP}" ]; then
-            echo "ERROR: EC2 has no public IP address."
+          if [ "$PUBLIC_IP" = "None" ] || [ -z "$PUBLIC_IP" ]; then
+            echo "ERROR: EC2 does not have a public IP."
             exit 1
           fi
 
@@ -350,13 +362,13 @@ jobs:
               -o /tmp/portfolio-response.html; then
 
               if grep -qi '<html' /tmp/portfolio-response.html; then
-                echo "Portfolio deployment succeeded!"
-                echo "Website URL: http://${PUBLIC_IP}"
+                echo "Deployment successful!"
+                echo "Portfolio URL: http://${PUBLIC_IP}"
                 exit 0
               fi
             fi
 
-            echo "Waiting for website response (${ATTEMPT}/12)..."
+            echo "Waiting for website (${ATTEMPT}/12)..."
             sleep 5
           done
 
