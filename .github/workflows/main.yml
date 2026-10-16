@@ -24,11 +24,11 @@ jobs:
       PROJECT_NAME: portfolio-cicd
 
     steps:
-      # 1. Get the latest repository code on the GitHub runner.
+      # 1. Checkout the repository on the GitHub runner.
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Check the required website files.
+      # 2. Validate website files.
       - name: Validate website files
         run: |
           set -euo pipefail
@@ -51,7 +51,7 @@ jobs:
         with:
           terraform_version: 1.10.5
 
-      # 4. Use the existing repository secrets.
+      # 4. Configure AWS using existing repository secrets.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -59,12 +59,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 5. Verify the AWS identity.
+      # 5. Verify AWS authentication.
       - name: Verify AWS credentials
         run: aws sts get-caller-identity
 
-      # 6. Find an existing project EC2 instance.
-      # Terraform runs only when no matching instance exists.
+      # 6. Find the existing EC2 instance or provision it.
       - name: Find or create EC2
         id: ec2
         run: |
@@ -78,8 +77,8 @@ jobs:
             --output text)
 
           if [ "${INSTANCE_ID}" = "None" ] || [ -z "${INSTANCE_ID}" ]; then
-            echo "No existing project instance found."
-            echo "Creating the infrastructure with Terraform."
+            echo "No existing project EC2 found."
+            echo "Creating infrastructure with Terraform."
 
             cd terraform
 
@@ -106,7 +105,7 @@ jobs:
           fi
 
           if [ "${INSTANCE_ID}" = "None" ] || [ -z "${INSTANCE_ID}" ]; then
-            echo "ERROR: Could not find or create the project EC2."
+            echo "ERROR: Could not find or create EC2."
             exit 1
           fi
 
@@ -115,12 +114,15 @@ jobs:
             --query 'Reservations[0].Instances[0].State.Name' \
             --output text)
 
-          # Resume a stopped instance rather than create another one.
           if [ "${STATE}" = "stopped" ]; then
-            aws ec2 start-instances --instance-ids "${INSTANCE_ID}"
+            aws ec2 start-instances \
+              --instance-ids "${INSTANCE_ID}"
           elif [ "${STATE}" = "stopping" ]; then
-            aws ec2 wait instance-stopped --instance-ids "${INSTANCE_ID}"
-            aws ec2 start-instances --instance-ids "${INSTANCE_ID}"
+            aws ec2 wait instance-stopped \
+              --instance-ids "${INSTANCE_ID}"
+
+            aws ec2 start-instances \
+              --instance-ids "${INSTANCE_ID}"
           fi
 
           aws ec2 wait instance-running \
@@ -129,7 +131,7 @@ jobs:
           echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
           echo "Using EC2 instance: ${INSTANCE_ID}"
 
-      # 7. Wait for the Ubuntu server to register with SSM.
+      # 7. Wait for EC2 to register with Systems Manager.
       - name: Wait for SSM connection
         env:
           INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
@@ -150,48 +152,73 @@ jobs:
               break
             fi
 
-            echo "Waiting for SSM registration (${attempt}/45)..."
+            echo "Waiting for SSM (${attempt}/45)..."
             sleep 10
           done
 
           if [ "${ONLINE}" != "true" ]; then
-            echo "ERROR: EC2 did not become available in SSM."
-            echo "Check the SSM agent, instance IAM role, and outbound network access."
+            echo "ERROR: EC2 did not register with SSM."
+            echo "Check the SSM agent, instance IAM role, and outbound network."
             exit 1
           fi
 
-      # 8. Pull the latest code directly on the EC2 instance.
+      # 8. Clone/update the repository and deploy on EC2.
       - name: Clone or update repository on EC2
-        id: remote_deploy
         env:
           INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
-          REPO_URL: https://github.com/KADALIBHARATsairam/portfolio_CICD.git
-          BRANCH: main
         run: |
           set -euo pipefail
 
-          REMOTE_SCRIPT=$(cat <<REMOTE
-          set -euo pipefail
+          # IMPORTANT:
+          # This script runs on EC2, not on the GitHub runner.
+          # /bin/sh does not support the Bash pipefail option.
+          REMOTE_SCRIPT=$(cat <<'REMOTE'
+          set -eu
 
-          # Clone if this is the first deployment.
-          if [ ! -d /opt/portfolio/.git ]; then
-            git clone --depth 1 --branch "${BRANCH}" \
-              "${REPO_URL}" /opt/portfolio
+          # Wait for the first-boot installation to finish.
+          if command -v cloud-init >/dev/null 2>&1; then
+            cloud-init status --wait
           fi
 
-          # Fetch and deploy the latest commit.
-          git -C /opt/portfolio fetch origin "${BRANCH}"
-          git -C /opt/portfolio reset --hard "origin/${BRANCH}"
+          # Ensure required tools are installed.
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git nginx rsync curl
 
-          # Publish website files to Nginx.
-          rsync -av --delete --exclude='.git/' \
+          # Clone the public repository on EC2 if needed.
+          if [ ! -d /opt/portfolio/.git ]; then
+            mkdir -p /opt/portfolio
+            git clone \
+              --depth 1 \
+              --branch main \
+              https://github.com/KADALIBHARATsairam/portfolio_CICD.git \
+              /opt/portfolio
+          fi
+
+          # Fetch the latest code from the main branch.
+          git -C /opt/portfolio fetch origin main
+          git -C /opt/portfolio reset --hard origin/main
+
+          # Publish only website files to the Nginx document root.
+          # Remove files previously copied there but excluded below.
+          rsync -av \
+            --delete \
+            --delete-excluded \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='terraform/' \
+            --exclude='.gitignore' \
+            --exclude='README.md' \
+            --exclude='*.tfstate*' \
+            --exclude='*.tfplan' \
             /opt/portfolio/ /var/www/html/
 
+          # Validate and restart Nginx.
           nginx -t
           systemctl enable --now nginx
           systemctl reload nginx
 
-          # Confirm that Nginx is serving the portfolio.
+          # Verify the local website response.
           curl --fail --silent --show-error \
             http://127.0.0.1/ -o /dev/null
 
@@ -199,13 +226,15 @@ jobs:
           REMOTE
           )
 
+          # Convert the multiline remote script into valid SSM JSON.
           jq -n --arg command "${REMOTE_SCRIPT}" \
             '{commands: [$command]}' > /tmp/ssm-parameters.json
 
+          # Execute the script on the EC2 instance using SSM.
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy portfolio website from GitHub" \
+            --comment "Deploy portfolio from GitHub" \
             --parameters file:///tmp/ssm-parameters.json \
             --query 'Command.CommandId' \
             --output text)
@@ -252,7 +281,7 @@ jobs:
             --query 'StandardOutputContent' \
             --output text
 
-      # 9. Verify the public website URL.
+      # 9. Verify the public website.
       - name: Verify live portfolio
         env:
           INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
@@ -265,7 +294,7 @@ jobs:
             --output text)
 
           if [ "${PUBLIC_IP}" = "None" ] || [ -z "${PUBLIC_IP}" ]; then
-            echo "ERROR: EC2 has no public IP address."
+            echo "ERROR: EC2 has no public IP."
             exit 1
           fi
 
@@ -281,7 +310,7 @@ jobs:
               fi
             fi
 
-            echo "Waiting for website response (${attempt}/12)..."
+            echo "Waiting for website (${attempt}/12)..."
             sleep 5
           done
 
