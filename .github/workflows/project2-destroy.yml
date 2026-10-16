@@ -1,0 +1,138 @@
+
+name: Project 2 - Terraform Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: "Type DESTROY to delete the Project 2 website"
+        type: string
+        required: true
+        default: "NO"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portfolio-project2-s3
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ap-south-1
+      PROJECT_NAME: portfolio-project2-s3
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Confirm destruction
+        env:
+          CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_DESTROY" != "DESTROY" ]; then
+            echo "ERROR: Enter DESTROY to confirm deletion."
+            exit 1
+          fi
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Initialize Terraform
+        working-directory: terraform-project2
+        run: terraform init -backend=false -input=false
+
+      - name: Import existing website resources
+        working-directory: terraform-project2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET=$(sed -nE \
+            's/^[[:space:]]*bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+            variables.tfvars | head -n 1)
+
+          if [ -z "$BUCKET" ]; then
+            echo "ERROR: bucket_name missing in variables.tfvars."
+            exit 1
+          fi
+
+          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "ERROR: Website bucket does not exist or is inaccessible."
+            echo "No resources were deleted."
+            exit 1
+          fi
+
+          TAG=$(aws s3api get-bucket-tagging \
+            --bucket "$BUCKET" \
+            --query "TagSet[?Key=='Project'].Value | [0]" \
+            --output text 2>/dev/null || true)
+
+          if [ "$TAG" != "$PROJECT_NAME" ]; then
+            echo "ERROR: Bucket Project tag does not match."
+            echo "Refusing to destroy an unverified bucket."
+            exit 1
+          fi
+
+          terraform import -input=false \
+            -var-file=variables.tfvars \
+            aws_s3_bucket.portfolio "$BUCKET"
+
+          if aws s3api get-bucket-website --bucket "$BUCKET" >/dev/null 2>&1; then
+            terraform import -input=false \
+              -var-file=variables.tfvars \
+              aws_s3_bucket_website_configuration.portfolio "$BUCKET"
+          fi
+
+          if aws s3api get-public-access-block --bucket "$BUCKET" >/dev/null 2>&1; then
+            terraform import -input=false \
+              -var-file=variables.tfvars \
+              aws_s3_bucket_public_access_block.portfolio "$BUCKET"
+          fi
+
+          if aws s3api get-bucket-policy --bucket "$BUCKET" >/dev/null 2>&1; then
+            terraform import -input=false \
+              -var-file=variables.tfvars \
+              aws_s3_bucket_policy.portfolio "$BUCKET"
+          fi
+
+      - name: Terraform Format and Validate
+        working-directory: terraform-project2
+        run: |
+          terraform fmt -check -recursive
+          terraform validate
+
+      - name: Review destroy plan
+        working-directory: terraform-project2
+        run: |
+          terraform plan \
+            -destroy \
+            -input=false \
+            -var-file=variables.tfvars \
+            -out=tfplan-destroy
+
+      - name: Destroy website infrastructure
+        working-directory: terraform-project2
+        run: |
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            tfplan-destroy
+
+          echo "Project 2 website resources destroyed."
