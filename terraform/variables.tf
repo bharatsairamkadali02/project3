@@ -1,3 +1,4 @@
+
 variable "aws_region" {
   description = "AWS region for the portfolio website"
   type        = string
@@ -5,24 +6,25 @@ variable "aws_region" {
 }
 
 variable "project_name" {
-  description = "Project identifier used to tag AWS resources"
+  description = "Name used to identify Project 2 resources"
   type        = string
-  default     = "portfolio-cicd"
+  default     = "portfolio-project2-s3"
 }
 
-variable "instance_type" {
-  description = "EC2 instance size"
+variable "bucket_name" {
+  description = "Globally unique S3 bucket name for the website"
   type        = string
-  default     = "t3.micro"
-}
 
-variable "github_repo_url" {
-  description = "Public GitHub repository URL"
-  type        = string
-}
+  validation {
+    condition = (
+      length(var.bucket_name) >= 3 &&
+      length(var.bucket_name) <= 63 &&
+      can(regex(
+        "^[a-z0-9][a-z0-9.-]*[a-z0-9]$",
+        var.bucket_name
+      ))
+    )
 
-variable "github_branch" {
-  description = "Git branch containing the website"
-  type        = string
-  default     = "main"
+    error_message = "Bucket name must be 3-63 characters, using lowercase letters, numbers, dots, or hyphens."
+  }
 }
