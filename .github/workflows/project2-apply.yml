@@ -1,0 +1,192 @@
+  
+name: Project 2 - Terraform Apply and S3 Deploy
+
+on:
+  push:
+    branches:
+      - project2-s3-static-hosting
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portfolio-project2-s3
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Create S3 Website and Deploy
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ap-south-1
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+
+    steps:
+      # 1. Checkout the Project 2 branch.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Validate the portfolio files before making changes.
+      - name: Validate website files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for FILE in \
+            index.html \
+            style.css \
+            script.js \
+            profile.png \
+            project1.jpg \
+            project2.jpg
+          do
+            if [ ! -s "$FILE" ]; then
+              echo "ERROR: $FILE is missing or empty."
+              exit 1
+            fi
+          done
+
+          echo "Website validation successful."
+
+      # 3. Install Terraform.
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+
+      # 4. Configure AWS using GitHub repository secrets.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 5. Verify AWS authentication.
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      # 6. Initialize persistent Terraform state.
+      - name: Terraform Init
+        working-directory: terraform-project2
+        env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$TF_STATE_BUCKET" ]; then
+            echo "ERROR: TF_STATE_BUCKET secret is missing."
+            exit 1
+          fi
+
+          terraform init \
+            -input=false \
+            -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=portfolio-project2/s3-static/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      # 7. Validate Terraform configuration.
+      - name: Terraform Format and Validate
+        working-directory: terraform-project2
+        run: |
+          terraform fmt -check -recursive
+          terraform validate
+
+      # 8. Create or update the S3 website infrastructure.
+      - name: Terraform Plan
+        working-directory: terraform-project2
+        run: |
+          terraform plan \
+            -input=false \
+            -var-file=variables.tfvars \
+            -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform-project2
+        run: |
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            tfplan
+
+      # 9. Get the website bucket name from Terraform.
+      - name: Get website bucket
+        id: website
+        working-directory: terraform-project2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET=$(terraform output -raw website_bucket_name)
+          URL=$(terraform output -raw website_url)
+
+          echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+
+          echo "Website bucket: ${BUCKET}"
+          echo "Website URL: ${URL}"
+
+      # 10. Upload website files to S3.
+      - name: Upload portfolio to S3
+        env:
+          WEBSITE_BUCKET: ${{ steps.website.outputs.bucket }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws s3 sync "$GITHUB_WORKSPACE/" \
+            "s3://${WEBSITE_BUCKET}/" \
+            --delete \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "terraform/*" \
+            --exclude "terraform-project2/*" \
+            --exclude ".gitignore" \
+            --exclude "README.md" \
+            --exclude "*.tfstate*" \
+            --exclude "*.tfplan" \
+            --exclude "*.pdf"
+
+          echo "Portfolio files uploaded successfully."
+
+      # 11. Verify that the public website responds.
+      - name: Verify S3 website
+        env:
+          WEBSITE_URL: ${{ steps.website.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for ATTEMPT in $(seq 1 12); do
+            if curl --fail --silent --show-error \
+              --max-time 10 "${WEBSITE_URL}/" \
+              -o /tmp/portfolio-response.html; then
+
+              if grep -qi '<html' /tmp/portfolio-response.html; then
+                echo "Website deployment successful!"
+                echo "Website URL: ${WEBSITE_URL}"
+
+                {
+                  echo "## Project 2 S3 Deployment"
+                  echo ""
+                  echo "Website URL: ${WEBSITE_URL}"
+                } >> "$GITHUB_STEP_SUMMARY"
+
+                exit 0
+              fi
+            fi
+
+            echo "Waiting for website response (${ATTEMPT}/12)..."
+            sleep 5
+          done
+
+          echo "ERROR: Website verification failed."
+          echo "Check S3 website hosting, the bucket policy, and public-access settings."
+          exit 1

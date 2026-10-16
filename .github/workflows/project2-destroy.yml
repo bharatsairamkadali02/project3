@@ -1,0 +1,128 @@
+
+name: Project 2 - Terraform Destroy S3 Website
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: "Type DESTROY to delete the Project 2 website and its contents"
+        type: string
+        required: true
+        default: "NO"
+
+permissions:
+  contents: read
+
+# Share the same lock group as Apply to prevent overlapping operations.
+concurrency:
+  group: portfolio-project2-s3
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    name: Destroy S3 Website
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ap-south-1
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+
+    steps:
+      # 1. Checkout the selected branch.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Require explicit confirmation before using AWS credentials.
+      - name: Confirm destruction
+        env:
+          CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$CONFIRM_DESTROY" != "DESTROY" ]; then
+            echo "ERROR: Destruction was not confirmed."
+            echo "Enter exactly DESTROY when running this workflow."
+            exit 1
+          fi
+
+          echo "Destroy confirmation accepted."
+
+      # 3. Install Terraform.
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+
+      # 4. Configure AWS credentials.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 5. Verify the AWS account.
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      # 6. Load the SAME Terraform state as the Apply workflow.
+      - name: Terraform Init
+        working-directory: terraform-project2
+        env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$TF_STATE_BUCKET" ]; then
+            echo "ERROR: TF_STATE_BUCKET secret is missing."
+            exit 1
+          fi
+
+          terraform init \
+            -input=false \
+            -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=portfolio-project2/s3-static/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      # 7. Validate Terraform files.
+      - name: Terraform Format and Validate
+        working-directory: terraform-project2
+        run: |
+          terraform fmt -check -recursive
+          terraform validate
+
+      # 8. Preview what Terraform will delete.
+      - name: Terraform Destroy Plan
+        working-directory: terraform-project2
+        run: |
+          terraform plan \
+            -destroy \
+            -input=false \
+            -var-file=variables.tfvars \
+            -out=tfplan-destroy
+
+      # 9. Delete the Project 2 S3 website resources.
+      - name: Terraform Destroy
+        working-directory: terraform-project2
+        run: |
+          set -euo pipefail
+
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            tfplan-destroy
+
+          echo "Project 2 S3 website resources have been destroyed."
+
+          {
+            echo "## Project 2 Destroy"
+            echo ""
+            echo "Terraform completed the destruction operation."
+            echo "The separate Terraform state bucket was not part of this configuration."
+          } >> "$GITHUB_STEP_SUMMARY"
