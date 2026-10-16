@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Portfolio of Kadali Bharat Sairam, Cloud Native & DevSecOps Engineer.">
+    <title>Bharat Sairam | DevSecOps Engineer</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- CSS -->
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+    
+    <!-- Background Animated Orbs -->
+    <div class="bg-orb orb-1"></div>
+    <div class="bg-orb orb-2"></div>
+    <div class="bg-orb orb-3"></div>
+
+    <!-- Navigation -->
+    <nav id="navbar" class="glass-nav">
+        <div class="nav-container">
+            <a href="#" class="logo">Kadali Bharat Sairam<span>.</span></a>
+            
+            <div class="nav-links" id="navLinks">
+                <a href="#home" class="nav-link">Home</a>
+                <a href="#about" class="nav-link">About</a>
+                <a href="#skills" class="nav-link">Skills</a>
+                <a href="#education" class="nav-link">Education</a>
+                <a href="#projects" class="nav-link">Projects</a>
+                <a href="#certifications" class="nav-link">Certifications</a>
+            </div>
+
+            <div class="nav-socials desktop-only">
+                <a href="https://github.com/KadaliBharat" target="_blank" aria-label="GitHub"><i data-lucide="github"></i></a>
+                <a href="https://www.linkedin.com/in/kadalibharat" target="_blank" aria-label="LinkedIn"><i data-lucide="linkedin"></i></a>
+                <a href="#contact" class="btn btn-primary">Contact Me</a>
+            </div>
+
+            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle Menu">
+                <i data-lucide="menu"></i>
+            </button>
+        </div>
+    </nav>
+
+    <main>
+        <!-- Hero Section -->
+        <section id="home" class="hero section-padding">
+            <div class="container hero-grid">
+                <div class="hero-content">
+                    <div class="pill glass">
+                        <span class="pulse-dot"></span> Open to Work
+                    </div>
+                    <h1>BUILDING <span class="gradient-text">SECURE</span> &<br>SCALABLE CLOUD<br>INFRASTRUCTURE.</h1>
+                    <p class="hero-subtitle">
+                        Hi, I'm <strong class="hero-name">Kadali Bharat Sairam</strong>.<br>
+                        A Multi-Cloud DevSecOps Engineer focused on AWS, Azure, Terraform, Kubernetes, and CI/CD. I automate infrastructure from code to cloud.
+                    </p>
+                    <style>
+                        .social-circle {
+                            width: 44px; height: 44px; border-radius: 50%;
+                            border: 1px solid rgba(255,255,255,0.2);
+                            display: flex; align-items: center; justify-content: center;
+                            background: rgba(255,255,255,0.05); transition: all 0.3s ease;
+                        }
+                        .social-circle:hover {
+                            transform: translateY(-3px);
+                            border-color: rgba(56,189,248,0.5);
+                            background: rgba(56,189,248,0.1);
+                        }
+                    </style>
+                    <div class="hero-cta" style="flex-wrap: wrap; gap: 16px; margin-bottom: 24px;">
+                        <a href="Bharat_Sairam_Resume.pdf" download="Bharat_Sairam_Resume.pdf" class="btn btn-primary"><i data-lucide="download"></i> Download Resume</a>
+                        <a href="Bharat_Sairam_Resume.pdf" target="_blank" class="btn btn-outline glass"><i data-lucide="eye"></i> View Resume</a>
+                    </div>
+                    <div style="display: flex; gap: 12px;">
+                        <a href="https://www.linkedin.com/in/kadalibharat" target="_blank" class="social-circle" aria-label="LinkedIn">
+                            <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/linkedin/linkedin-original.svg" alt="LinkedIn" style="height: 20px;">
+                        </a>
+                        <a href="https://github.com/KadaliBharat" target="_blank" class="social-circle" aria-label="GitHub">
+                            <img src="https://cdn.simpleicons.org/github/FFFFFF" alt="GitHub" style="height: 20px;">
+                        </a>
+                        <a href="mailto:bharat.sai.ram.kadali01@gmail.com" class="social-circle" aria-label="Email">
+                            <img src="https://upload.wikimedia.org/wikipedia/commons/7/7e/Gmail_icon_%282020%29.svg" alt="Email" style="height: 20px;">
+                        </a>
+                    </div>
+                </div>
+                
+                <div class="hero-visual">
+                    <div class="glass profile-card">
+                        <div class="profile-img-wrapper">
+                            <img src="profile.png" alt="Bharat Sairam" class="profile-img">
+                        </div>
+                        <div class="profile-info">
+                            <h3>Bharat Sairam</h3>
+                            <p>MultiCloud DevSecOps Engineer</p>
+                            <div class="location">
+                                <i data-lucide="map-pin"></i> Hyderabad, IN
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- About Section -->
+        <section id="about" class="section-padding">
+            <div class="container">
+                <div class="section-header text-center">
+                    <h2 class="gradient-text">About Me</h2>
+                    <p>My journey in Multi Cloud and DevSecOps.</p>
+                </div>
+                
+                <div class="glass content-card about-card">
+                    <div class="about-icon">
+                        <i data-lucide="terminal"></i>
+                    </div>
+                    <div class="about-text">
+                        <p>Highly motivated and detail-oriented DevOps Engineer Fresher, recently graduated with a Bachelor of Technology (B-Tech) in Electronics and Communication Engineering (ECE). Possess a strong foundation in AWS, Docker, Kubernetes, Terraform, Git, Jenkins, Linux, and CI/CD, with hands-on experience in infrastructure automation, containerization, and cloud deployment projects.</p>
+                        <p>Passionate about cloud technologies, DevOps practices, and continuous learning to build scalable, secure, and automated solutions. Seeking an entry-level DevOps Engineer role where I can apply my technical skills, contribute to real-world production environments, and grow as a cloud and DevOps professional.</p>
+                        
+                        <div class="about-tags">
+                            <span class="glass-tag">B-Tech ECE (2022-2026)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Skills Section -->
+        <section id="skills" class="section-padding">
+            <div class="container">
+                <div class="section-header text-center">
+                    <h2 class="gradient-text">Technical Expertise</h2>
+                    <p>The tools and technologies I use to build and deploy.</p>
+                </div>
+                
+                <div class="skills-grid">
+                    <div class="glass skill-card">
+                        <div class="skill-icon-wrapper" style="background: none; border: none;">
+                            <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" style="height: 28px; margin-right: 12px; filter: brightness(0) invert(1);" alt="AWS">
+                            <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/azure/azure-original.svg" style="height: 28px;" alt="Azure">
+                        </div>
+                        <h3>Cloud Platforms</h3>
+                        <p>AWS, Azure</p>
+                    </div>
+                    
+                    <div class="glass skill-card">
+                        <div class="skill-icon-wrapper" style="background: none; border: none;">
+                            <img src="https://cdn.simpleicons.org/terraform/844FBA" style="height: 28px; margin-right: 12px;" alt="Terraform">
+                            <img src="https://cdn.simpleicons.org/ansible/EE0000" style="height: 28px;" alt="Ansible">
+                        </div>
+                        <h3>IaC & Configuration Management</h3>
+                        <p>Terraform, Ansible</p>
+                    </div>
+
+                    <div class="glass skill-card">
+                        <div class="skill-icon-wrapper" style="background: none; border: none;">
+                            <img src="https://cdn.simpleicons.org/docker/2496ED" style="height: 28px; margin-right: 12px;" alt="Docker">
+                            <img src="https://cdn.simpleicons.org/kubernetes/326CE5" style="height: 28px;" alt="Kubernetes">
+                        </div>
+                        <h3>Containerization</h3>
+                        <p>Docker, Kubernetes</p>
+                    </div>
+
+                    <div class="glass skill-card">
+                        <div class="skill-icon-wrapper" style="background: none; border: none;">
+                            <img src="https://cdn.simpleicons.org/jenkins/D24939" style="height: 28px; margin-right: 12px;" alt="Jenkins">
+                            <img src="https://cdn.simpleicons.org/git/F05032" style="height: 28px;" alt="Git">
+                        </div>
+                        <h3>CI/CD & VCS</h3>
+                        <p>Jenkins, GitHub Actions, Git</p>
+                    </div>
+
+                    <div class="glass skill-card">
+                        <div class="skill-icon-wrapper" style="background: none; border: none;">
+                            <img src="https://cdn.simpleicons.org/prometheus/E6522C" style="height: 28px; margin-right: 12px;" alt="Prometheus">
+                            <img src="https://cdn.simpleicons.org/grafana/F46800" style="height: 28px;" alt="Grafana">
+                        </div>
+                        <h3>Monitoring</h3>
+                        <p>Prometheus, Grafana, CloudWatch</p>
+                    </div>
+
+                    <div class="glass skill-card">
+                        <div class="skill-icon-wrapper" style="background: none; border: none;">
+                            <img src="https://cdn.simpleicons.org/linux/FCC624" style="height: 28px; margin-right: 12px;" alt="Linux">
+                            <img src="https://cdn.simpleicons.org/python/3776AB" style="height: 28px;" alt="Python">
+                        </div>
+                        <h3>OS & Scripting</h3>
+                        <p>Linux, Windows, Python, Shell Scripting</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Education Section -->
+        <section id="education" class="section-padding">
+            <div class="container">
+                <div class="section-header text-center">
+                    <h2 class="gradient-text">Education</h2>
+                    <p>My academic background.</p>
+                </div>
+                
+                <div class="timeline">
+                    <div class="timeline-item">
+                        <div class="timeline-dot"></div>
+                        <div class="glass timeline-content">
+                            <h3>B-Tech (Electronics and Communication Engineering)</h3>
+                            <p class="timeline-school">St. Martin’s Engineering College</p>
+                            <span class="glass-tag">2022 &mdash; 2026</span>
+                        </div>
+                    </div>
+                    <div class="timeline-item">
+                        <div class="timeline-dot"></div>
+                        <div class="glass timeline-content">
+                            <h3>Intermediate (MPC)</h3>
+                            <p class="timeline-school">Veda Junior College</p>
+                            <span class="glass-tag">2020 &mdash; 2022</span>
+                        </div>
+                    </div>
+                    <div class="timeline-item">
+                        <div class="timeline-dot"></div>
+                        <div class="glass timeline-content">
+                            <h3>Secondary School (SSC)</h3>
+                            <p class="timeline-school">Vikas E.M School</p>
+                            <span class="glass-tag">2019 &mdash; 2020</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Projects Section -->
+        <section id="projects" class="section-padding">
+            <div class="container">
+                <div class="section-header text-center">
+                    <h2 class="gradient-text">Featured Projects</h2>
+                    <p>Real-world infrastructure and deployment pipelines.</p>
+                </div>
+                
+                <div class="projects-grid">
+                    <!-- Project 1 -->
+                    <div class="glass project-card">
+                        <a href="project1.jpg" target="_blank" class="project-img-link" title="Click to view full architecture diagram">
+                            <div class="project-image-wrapper">
+                                <img src="project1.jpg" alt="AWS Banking App Architecture Diagram" class="project-img">
+                                <div class="project-img-overlay">
+                                    <i data-lucide="maximize-2"></i> <span>View Architecture</span>
+                                </div>
+                            </div>
+                        </a>
+                        <div class="project-top">
+                            <div class="project-icon"><i data-lucide="folder-git-2"></i></div>
+                            <a href="https://github.com/KadaliBharat/AWS-3-Tier-Banking-Application-Infrastructure-using-Terraform" target="_blank" class="github-link" title="View Source on GitHub"><i data-lucide="external-link"></i></a>
+                        </div>
+                        <h3>AWS Banking App Infrastructure</h3>
+                        <p class="project-desc">Designed and deployed a secure and scalable banking application infrastructure on AWS using Terraform. Implemented a highly available architecture with separate web, application, and database tiers.</p>
+                        
+                        <ul class="project-features">
+                            <li><i data-lucide="check-circle-2"></i> Custom VPC across multiple AZs</li>
+                            <li><i data-lucide="check-circle-2"></i> Provisioned ALB, EC2 Auto Scaling & RDS MySQL</li>
+                            <li><i data-lucide="check-circle-2"></i> CloudWatch monitoring integration</li>
+                        </ul>
+                        
+                        <div class="project-tags">
+                            <span class="glass-tag">AWS</span>
+                            <span class="glass-tag">Terraform</span>
+                            <span class="glass-tag">Linux</span>
+                        </div>
+                    </div>
+
+                    <!-- Project 2 -->
+                    <div class="glass project-card">
+                        <a href="project2.jpg" target="_blank" class="project-img-link" title="Click to view full architecture diagram">
+                            <div class="project-image-wrapper">
+                                <img src="project2.jpg" alt="Enterprise AWS CI/CD Architecture Diagram" class="project-img">
+                                <div class="project-img-overlay">
+                                    <i data-lucide="maximize-2"></i> <span>View Architecture</span>
+                                </div>
+                            </div>
+                        </a>
+                        <div class="project-top">
+                            <div class="project-icon"><i data-lucide="git-merge"></i></div>
+                            <a href="https://github.com/KadaliBharat/aws-3tire-jenkins" target="_blank" class="github-link" title="View Source on GitHub"><i data-lucide="external-link"></i></a>
+                        </div>
+                        <h3>Enterprise AWS 3-Tier Architecture – CI/CD Infrastructure Automation</h3>
+                        <p class="project-desc">Designed a robust 3-tier CI/CD architecture using Jenkins on AWS. Engineered for high availability and scalable deployment pipelines, integrating modern DevSecOps practices.</p>
+                        
+                        <ul class="project-features">
+                            <li><i data-lucide="check-circle-2"></i> Automated deployment workflows</li>
+                            <li><i data-lucide="check-circle-2"></i> Highly available Jenkins setup</li>
+                            <li><i data-lucide="check-circle-2"></i> DevSecOps pipeline integration</li>
+                        </ul>
+                        
+                        <div class="project-tags">
+                            <span class="glass-tag">AWS</span>
+                            <span class="glass-tag">Jenkins</span>
+                            <span class="glass-tag">CI/CD</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Certifications Section -->
+        <section id="certifications" class="section-padding">
+            <div class="container">
+                <div class="section-header text-center">
+                    <h2 class="gradient-text">Certifications</h2>
+                    <p>Validated expertise and continuous learning.</p>
+                </div>
+                
+                <div class="certs-grid">
+                    <div class="glass cert-card">
+                        <div class="cert-icon azure" style="background: none; border: none;">
+                            <svg style="height: 36px;" viewBox="0 0 23 23" xmlns="http://www.w3.org/2000/svg"><path fill="#f35325" d="M0 0h11v11H0z"/><path fill="#81bc06" d="M12 0h11v11H12z"/><path fill="#05a6f0" d="M0 12h11v11H0z"/><path fill="#ffba08" d="M12 12h11v11H12z"/></svg>
+                        </div>
+                        <div class="cert-info">
+                            <h4>Microsoft Certified: Azure Fundamentals (AZ-900)</h4>
+                            <p>Microsoft &bull; Issued Aug 2026</p>
+                        </div>
+                    </div>
+                    
+                    <div class="glass cert-card">
+                        <div class="cert-icon redis" style="background: none; border: none; display: flex; align-items: center; justify-content: center;">
+                            <div style="width: 44px; height: 44px; border-radius: 8px; background: #FF4438; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(255, 68, 56, 0.3);">
+                                <img src="https://cdn.simpleicons.org/redis/ffffff" style="height: 24px; width: 24px;" alt="Redis">
+                            </div>
+                        </div>
+                        <div class="cert-info">
+                            <h4>Redis Associate Cloud Operator</h4>
+                            <p>Redis &bull; Issued Sep 2026</p>
+                        </div>
+                    </div>
+                    
+                    <div class="glass cert-card">
+                        <div class="cert-icon python" style="background: none; border: none;">
+                            <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/python/python-original.svg" style="height: 36px;" alt="Python">
+                        </div>
+                        <div class="cert-info">
+                            <h4>Python for Data Structures, Algorithms</h4>
+                            <p>Udemy</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Contact Section -->
+        <section id="contact" class="section-padding">
+            <div class="container">
+                <div class="glass contact-card text-center">
+                    <h2 class="gradient-text">Let's Connect</h2>
+                    <p>I'm currently seeking an entry-level MultiCloud and DevSecOps role. Whether you have an opportunity or just want to chat about cloud architecture, my inbox is open!</p>
+                    
+                    <div class="contact-buttons">
+                        <a href="mailto:bharat.sai.ram.kadali01@gmail.com" class="btn btn-primary"><i data-lucide="mail"></i> Say Hello</a>
+                        <a href="https://www.linkedin.com/in/kadalibharat" target="_blank" class="btn btn-outline glass"><i data-lucide="linkedin"></i> Connect on LinkedIn</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="glass-footer">
+        <div class="container footer-content">
+            <div class="footer-left">
+                <p>&copy; 2026 Kadali Bharat Sairam.</p>
+            </div>
+            <div class="footer-socials">
+                <a href="https://github.com/KadaliBharat" target="_blank" aria-label="GitHub"><i data-lucide="github"></i></a>
+                <a href="https://www.linkedin.com/in/kadalibharat" target="_blank" aria-label="LinkedIn"><i data-lucide="linkedin"></i></a>
+                <a href="mailto:bharat.sai.ram.kadali01@gmail.com" aria-label="Email"><i data-lucide="mail"></i></a>
+            </div>
+            <div class="footer-right">
+                <p>Built with <i data-lucide="heart" style="width: 14px; height: 14px; color: #f43f5e;"></i> for Cloud Native.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="script.js"></script>
+</body>
+</html>
