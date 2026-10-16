@@ -1,212 +1,364 @@
-terraform {
-  required_version = ">= 1.5.0"
+name: Deploy Portfolio to AWS EC2
 
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
-provider "aws" {
-  region = var.aws_region
-}
+permissions:
+  contents: read
 
-# Find an available Availability Zone.
-data "aws_availability_zones" "available" {
-  state = "available"
-}
+concurrency:
+  group: portfolio-cicd-deployment
+  cancel-in-progress: false
 
-# Find the latest official Ubuntu 24.04 LTS AMI.
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"]
+jobs:
+  deploy:
+    name: Provision and Deploy Portfolio
+    runs-on: ubuntu-latest
 
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
-  }
+    env:
+      AWS_REGION: ap-south-1
+      PROJECT_NAME: portfolio-cicd
 
-  filter {
-    name   = "architecture"
-    values = ["x86_64"]
-  }
+    steps:
+      # 1. Checkout the repository on the GitHub Actions runner.
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
+      # 2. Validate the website before provisioning or deployment.
+      - name: Validate website files
+        shell: bash
+        run: |
+          set -euo pipefail
 
-  filter {
-    name   = "root-device-type"
-    values = ["ebs"]
-  }
-}
+          REQUIRED_FILES=(
+            "index.html"
+            "style.css"
+            "script.js"
+            "profile.png"
+            "project1.jpg"
+            "project2.jpg"
+          )
 
-# 1. Create a VPC.
-resource "aws_vpc" "portfolio_vpc" {
-  cidr_block           = "10.20.0.0/16"
-  enable_dns_support   = true
-  enable_dns_hostnames = true
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [ ! -s "$FILE" ]; then
+              echo "ERROR: $FILE is missing or empty in the repository root."
+              echo "Restore the website files and commit them to main."
+              exit 1
+            fi
+          done
 
-  tags = {
-    Name    = "${var.project_name}-vpc"
-    Project = var.project_name
-  }
-}
+          echo "All required website files are present."
 
-# 2. Create a public subnet.
-resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.portfolio_vpc.id
-  cidr_block              = "10.20.1.0/24"
-  availability_zone       = data.aws_availability_zones.available.names[0]
-  map_public_ip_on_launch = true
+      # 3. Install Terraform.
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
 
-  tags = {
-    Name    = "${var.project_name}-public-subnet"
-    Project = var.project_name
-  }
-}
+      # 4. Configure AWS using your existing repository secrets.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-# 3. Create an internet gateway.
-resource "aws_internet_gateway" "portfolio_igw" {
-  vpc_id = aws_vpc.portfolio_vpc.id
+      # 5. Confirm the AWS account identity.
+      - name: Verify AWS credentials
+        run: aws sts get-caller-identity
 
-  tags = {
-    Name    = "${var.project_name}-igw"
-    Project = var.project_name
-  }
-}
+      # 6. Find the existing project EC2 or provision one.
+      - name: Find or create EC2
+        id: ec2
+        shell: bash
+        run: |
+          set -euo pipefail
 
-# 4. Configure the public route table.
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.portfolio_vpc.id
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Project,Values=${PROJECT_NAME}" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId | [0]' \
+            --output text)
 
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.portfolio_igw.id
-  }
+          if [ "${INSTANCE_ID}" = "None" ] || [ -z "${INSTANCE_ID}" ]; then
+            echo "No existing project EC2 was found."
+            echo "Creating AWS infrastructure with Terraform."
 
-  tags = {
-    Name    = "${var.project_name}-public-rt"
-    Project = var.project_name
-  }
-}
+            cd terraform
 
-resource "aws_route_table_association" "public" {
-  subnet_id      = aws_subnet.public.id
-  route_table_id = aws_route_table.public.id
-}
+            terraform init -backend=false
+            terraform fmt -recursive
+            terraform validate
 
-# 5. Allow HTTP access.
-# SSH is not opened; deployment uses Systems Manager.
-resource "aws_security_group" "portfolio_sg" {
-  name        = "${var.project_name}-sg"
-  description = "Allow HTTP access to the portfolio website"
-  vpc_id      = aws_vpc.portfolio_vpc.id
+            terraform plan \
+              -var-file=variables.tfvars \
+              -out=tfplan
 
-  ingress {
-    description = "Public HTTP"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+            terraform apply \
+              -auto-approve \
+              tfplan
 
-  egress {
-    description = "Outbound connections for updates and SSM"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+            cd ..
 
-  tags = {
-    Name    = "${var.project_name}-sg"
-    Project = var.project_name
-  }
-}
+            INSTANCE_ID=$(aws ec2 describe-instances \
+              --filters \
+                "Name=tag:Project,Values=${PROJECT_NAME}" \
+                "Name=instance-state-name,Values=pending,running" \
+              --query 'Reservations[].Instances[].InstanceId | [0]' \
+              --output text)
+          fi
 
-# 6. Create an IAM role for the EC2 SSM agent.
-resource "aws_iam_role" "ec2_ssm_role" {
-  name = "${var.project_name}-ssm-role"
+          if [ "${INSTANCE_ID}" = "None" ] || [ -z "${INSTANCE_ID}" ]; then
+            echo "ERROR: Could not find or create EC2."
+            exit 1
+          fi
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
+          STATE=$(aws ec2 describe-instances \
+            --instance-ids "${INSTANCE_ID}" \
+            --query 'Reservations[0].Instances[0].State.Name' \
+            --output text)
 
-    Statement = [{
-      Effect = "Allow"
+          if [ "${STATE}" = "stopped" ]; then
+            aws ec2 start-instances \
+              --instance-ids "${INSTANCE_ID}"
+          elif [ "${STATE}" = "stopping" ]; then
+            aws ec2 wait instance-stopped \
+              --instance-ids "${INSTANCE_ID}"
 
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
+            aws ec2 start-instances \
+              --instance-ids "${INSTANCE_ID}"
+          fi
 
-      Action = "sts:AssumeRole"
-    }]
-  })
+          aws ec2 wait instance-running \
+            --instance-ids "${INSTANCE_ID}"
 
-  tags = {
-    Project = var.project_name
-  }
-}
+          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Using EC2 instance: ${INSTANCE_ID}"
 
-resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role       = aws_iam_role.ec2_ssm_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
+      # 7. Wait for EC2 to become available in Systems Manager.
+      - name: Wait for SSM connection
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-resource "aws_iam_instance_profile" "portfolio_profile" {
-  name = "${var.project_name}-instance-profile"
-  role = aws_iam_role.ec2_ssm_role.name
-}
+          ONLINE=false
 
-# 7. Create the Ubuntu EC2 instance.
-resource "aws_instance" "portfolio" {
-  ami                         = data.aws_ami.ubuntu.id
-  instance_type               = var.instance_type
-  subnet_id                   = aws_subnet.public.id
-  vpc_security_group_ids      = [aws_security_group.portfolio_sg.id]
-  iam_instance_profile        = aws_iam_instance_profile.portfolio_profile.name
-  associate_public_ip_address = true
+          for ATTEMPT in $(seq 1 45); do
+            STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text 2>/dev/null || true)
 
-  user_data_replace_on_change = true
+            if [ "${STATUS}" = "Online" ]; then
+              ONLINE=true
+              echo "EC2 is online in Systems Manager."
+              break
+            fi
 
-  # Install Nginx, Git, rsync, and the SSM agent.
-  # The GitHub Actions workflow will clone and deploy the website.
-  user_data = <<-EOF
-    #!/bin/bash
-    set -eux
+            echo "Waiting for SSM registration (${ATTEMPT}/45)..."
+            sleep 10
+          done
 
-    exec > >(tee -a /var/log/portfolio-setup.log) 2>&1
+          if [ "${ONLINE}" != "true" ]; then
+            echo "ERROR: EC2 did not register with SSM."
+            echo "Check the SSM agent, IAM role, and outbound network."
+            exit 1
+          fi
 
-    export DEBIAN_FRONTEND=noninteractive
+      # 8. Clone/update the repo and deploy on EC2.
+      - name: Clone or update repository on EC2
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-    apt-get update
-    apt-get install -y nginx git rsync curl snapd
+          # This script is executed remotely on EC2 using /bin/sh.
+          # Do not use Bash-only options such as pipefail here.
+          REMOTE_SCRIPT=$(cat <<'REMOTE'
+          set -eu
 
-    systemctl enable --now nginx
+          REPO_URL="https://github.com/KADALIBHARATsairam/portfolio_CICD.git"
+          BRANCH="main"
+          REPO_DIR="/opt/portfolio"
+          WEB_ROOT="/var/www/html"
 
-    # Use the existing SSM agent if installed;
-    # otherwise install it using Snap.
-    if systemctl list-unit-files | grep -q '^amazon-ssm-agent.service'; then
-      systemctl enable --now amazon-ssm-agent
-    else
-      if ! snap list amazon-ssm-agent >/dev/null 2>&1; then
-        snap install amazon-ssm-agent --classic
-      fi
+          # Ensure first-boot setup has completed.
+          if command -v cloud-init >/dev/null 2>&1; then
+            cloud-init status --wait
+          fi
 
-      systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service
-    fi
-  EOF
+          # Install deployment tools only if one is missing.
+          if ! command -v git >/dev/null 2>&1 ||
+             ! command -v nginx >/dev/null 2>&1 ||
+             ! command -v rsync >/dev/null 2>&1 ||
+             ! command -v curl >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y git nginx rsync curl
+          fi
 
-  depends_on = [
-    aws_route_table_association.public,
-    aws_iam_role_policy_attachment.ssm_core
-  ]
+          # Clone the repository if it does not exist yet.
+          if [ ! -d "${REPO_DIR}/.git" ]; then
+            if [ -d "${REPO_DIR}" ]; then
+              rmdir "${REPO_DIR}" 2>/dev/null || true
+            fi
 
-  tags = {
-    Name    = "${var.project_name}-ec2"
-    Project = var.project_name
-  }
-}
+            git clone \
+              --depth 1 \
+              --branch "${BRANCH}" \
+              "${REPO_URL}" \
+              "${REPO_DIR}"
+          fi
+
+          # Fetch and reset to the latest committed main branch.
+          git -C "${REPO_DIR}" fetch origin "${BRANCH}"
+          git -C "${REPO_DIR}" reset --hard "origin/${BRANCH}"
+
+          # Validate remote files BEFORE rsync --delete.
+          # This prevents an empty or incomplete commit from
+          # clearing the existing Nginx document root.
+          for FILE in \
+            index.html \
+            style.css \
+            script.js \
+            profile.png \
+            project1.jpg \
+            project2.jpg
+          do
+            if [ ! -s "${REPO_DIR}/${FILE}" ]; then
+              echo "ERROR: ${FILE} is missing or empty in ${REPO_DIR}."
+              echo "No files were copied to the Nginx web root."
+              exit 1
+            fi
+          done
+
+          # Deploy website files to Nginx.
+          # Exclude Git, workflow, and Terraform files.
+          rsync -av \
+            --delete \
+            --delete-excluded \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='terraform/' \
+            --exclude='.gitignore' \
+            --exclude='README.md' \
+            --exclude='*.tfstate*' \
+            --exclude='*.tfplan' \
+            "${REPO_DIR}/" "${WEB_ROOT}/"
+
+          # Validate the configuration and start Nginx.
+          nginx -t
+          systemctl enable --now nginx
+          systemctl reload nginx
+
+          # Verify that Nginx serves an HTML response.
+          curl --fail --silent --show-error \
+            http://127.0.0.1/ -o /tmp/portfolio-response.html
+
+          if ! grep -qi '<html' /tmp/portfolio-response.html; then
+            echo "ERROR: Nginx did not return expected HTML."
+            exit 1
+          fi
+
+          echo "Portfolio deployment succeeded."
+          REMOTE
+          )
+
+          # Safely serialize the multiline script to JSON.
+          jq -n --arg command "${REMOTE_SCRIPT}" \
+            '{commands: [$command]}' > /tmp/ssm-parameters.json
+
+          # Run deployment commands on the Ubuntu EC2 instance.
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Clone and deploy portfolio from GitHub" \
+            --parameters file:///tmp/ssm-parameters.json \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM command ID: ${COMMAND_ID}"
+
+          COMPLETED=false
+
+          for ATTEMPT in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query 'Status' \
+              --output text 2>/dev/null || true)
+
+            if [ "${STATUS}" = "Success" ]; then
+              COMPLETED=true
+              break
+            fi
+
+            case "${STATUS}" in
+              Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation \
+                  --command-id "${COMMAND_ID}" \
+                  --instance-id "${INSTANCE_ID}" \
+                  --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+                  --output json || true
+                exit 1
+                ;;
+            esac
+
+            echo "Deployment status: ${STATUS}"
+            sleep 5
+          done
+
+          if [ "${COMPLETED}" != "true" ]; then
+            echo "ERROR: Timed out waiting for SSM deployment."
+            exit 1
+          fi
+
+          aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${INSTANCE_ID}" \
+            --query 'StandardOutputContent' \
+            --output text
+
+      # 9. Verify the public website.
+      - name: Verify live portfolio
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids "${INSTANCE_ID}" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+
+          if [ "${PUBLIC_IP}" = "None" ] || [ -z "${PUBLIC_IP}" ]; then
+            echo "ERROR: EC2 has no public IP address."
+            exit 1
+          fi
+
+          for ATTEMPT in $(seq 1 12); do
+            if curl --fail --silent --show-error \
+              --max-time 10 "http://${PUBLIC_IP}/" \
+              -o /tmp/portfolio-response.html; then
+
+              if grep -qi '<html' /tmp/portfolio-response.html; then
+                echo "Portfolio deployment succeeded!"
+                echo "Website URL: http://${PUBLIC_IP}"
+                exit 0
+              fi
+            fi
+
+            echo "Waiting for website response (${ATTEMPT}/12)..."
+            sleep 5
+          done
+
+          echo "ERROR: Website verification failed."
+          exit 1

@@ -1,4 +1,3 @@
-
 variable "aws_region" {
   description = "AWS region for the portfolio website"
   type        = string
@@ -6,19 +5,19 @@ variable "aws_region" {
 }
 
 variable "project_name" {
-  description = "Unique project identifier used for AWS resource tags"
+  description = "Project identifier used to tag AWS resources"
   type        = string
   default     = "portfolio-cicd"
 }
 
 variable "instance_type" {
-  description = "EC2 instance type"
+  description = "EC2 instance size"
   type        = string
   default     = "t3.micro"
 }
 
 variable "github_repo_url" {
-  description = "Public GitHub repository to deploy"
+  description = "Public GitHub repository URL"
   type        = string
 }
 

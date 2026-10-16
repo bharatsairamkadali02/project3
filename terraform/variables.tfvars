@@ -1,4 +1,3 @@
-
 aws_region      = "ap-south-1"
 project_name    = "portfolio-cicd"
 instance_type   = "t3.micro"

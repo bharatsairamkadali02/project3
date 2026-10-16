@@ -1,4 +1,3 @@
-
 terraform {
   required_version = ">= 1.5.0"
 
@@ -14,12 +13,12 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Select an available Availability Zone.
+# Find an available Availability Zone.
 data "aws_availability_zones" "available" {
   state = "available"
 }
 
-# Find an official Ubuntu 24.04 LTS AMI.
+# Find the latest official Ubuntu 24.04 LTS AMI.
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]
@@ -45,10 +44,7 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-# -------------------------------
-# 1. VPC and public networking
-# -------------------------------
-
+# 1. Create a VPC.
 resource "aws_vpc" "portfolio_vpc" {
   cidr_block           = "10.20.0.0/16"
   enable_dns_support   = true
@@ -60,6 +56,7 @@ resource "aws_vpc" "portfolio_vpc" {
   }
 }
 
+# 2. Create a public subnet.
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.portfolio_vpc.id
   cidr_block              = "10.20.1.0/24"
@@ -72,6 +69,7 @@ resource "aws_subnet" "public" {
   }
 }
 
+# 3. Create an internet gateway.
 resource "aws_internet_gateway" "portfolio_igw" {
   vpc_id = aws_vpc.portfolio_vpc.id
 
@@ -81,6 +79,7 @@ resource "aws_internet_gateway" "portfolio_igw" {
   }
 }
 
+# 4. Configure the public route table.
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.portfolio_vpc.id
 
@@ -100,28 +99,23 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# -------------------------------
-# 2. Security group
-# -------------------------------
-
+# 5. Allow HTTP access.
+# SSH is not opened; deployment uses Systems Manager.
 resource "aws_security_group" "portfolio_sg" {
   name        = "${var.project_name}-sg"
-  description = "Allow public HTTP access to the portfolio"
+  description = "Allow HTTP access to the portfolio website"
   vpc_id      = aws_vpc.portfolio_vpc.id
 
   ingress {
-    description = "HTTP website"
+    description = "Public HTTP"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # No inbound SSH rule is necessary.
-  # GitHub Actions deploys through AWS Systems Manager.
-
   egress {
-    description = "Allow outbound traffic"
+    description = "Outbound connections for updates and SSM"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -134,10 +128,7 @@ resource "aws_security_group" "portfolio_sg" {
   }
 }
 
-# -------------------------------
-# 3. IAM role for AWS SSM
-# -------------------------------
-
+# 6. Create an IAM role for the EC2 SSM agent.
 resource "aws_iam_role" "ec2_ssm_role" {
   name = "${var.project_name}-ssm-role"
 
@@ -170,10 +161,7 @@ resource "aws_iam_instance_profile" "portfolio_profile" {
   role = aws_iam_role.ec2_ssm_role.name
 }
 
-# -------------------------------
-# 4. Ubuntu EC2 instance
-# -------------------------------
-
+# 7. Create the Ubuntu EC2 instance.
 resource "aws_instance" "portfolio" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
@@ -184,46 +172,32 @@ resource "aws_instance" "portfolio" {
 
   user_data_replace_on_change = true
 
+  # Install Nginx, Git, rsync, and the SSM agent.
+  # The GitHub Actions workflow will clone and deploy the website.
   user_data = <<-EOF
     #!/bin/bash
-    set -euxo pipefail
+    set -eux
 
     exec > >(tee -a /var/log/portfolio-setup.log) 2>&1
 
     export DEBIAN_FRONTEND=noninteractive
 
-    # Install website deployment tools.
     apt-get update
     apt-get install -y nginx git rsync curl snapd
 
     systemctl enable --now nginx
 
-    # Ensure that the AWS SSM agent is available.
-    if ! snap list amazon-ssm-agent >/dev/null 2>&1; then
-      snap install amazon-ssm-agent --classic
+    # Use the existing SSM agent if installed;
+    # otherwise install it using Snap.
+    if systemctl list-unit-files | grep -q '^amazon-ssm-agent.service'; then
+      systemctl enable --now amazon-ssm-agent
+    else
+      if ! snap list amazon-ssm-agent >/dev/null 2>&1; then
+        snap install amazon-ssm-agent --classic
+      fi
+
+      systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service
     fi
-
-    systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service
-
-    # Clone the public repository on the EC2 machine.
-    mkdir -p /opt/portfolio
-
-    if [ ! -d /opt/portfolio/.git ]; then
-      git clone \
-        --depth 1 \
-        --branch "${var.github_branch}" \
-        "${var.github_repo_url}" \
-        /opt/portfolio
-    fi
-
-    # Publish the website files to the Nginx web root.
-    rsync -av --delete \
-      --exclude='.git/' \
-      /opt/portfolio/ \
-      /var/www/html/
-
-    nginx -t
-    systemctl restart nginx
   EOF
 
   depends_on = [
