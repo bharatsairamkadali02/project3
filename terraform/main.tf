@@ -129,27 +129,24 @@ resource "aws_security_group" "portfolio_sg" {
 }
 
 # 6. Create an IAM role for the EC2 SSM agent.
-resource "aws_iam_role" "ec2_ssm_role" {
+
+# 6. Reuse the existing EC2 IAM role.
+# This role already exists in your AWS account.
+data "aws_iam_role" "ec2_ssm_role" {
   name = "${var.project_name}-ssm-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-
-    Statement = [{
-      Effect = "Allow"
-
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
-
-      Action = "sts:AssumeRole"
-    }]
-  })
-
-  tags = {
-    Project = var.project_name
-  }
 }
+
+# Attach the required SSM permissions to the existing role.
+resource "aws_iam_role_policy_attachment" "ssm_core" {
+  role       = data.aws_iam_role.ec2_ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# 7. Reuse the existing instance profile.
+data "aws_iam_instance_profile" "portfolio_profile" {
+  name = "${var.project_name}-instance-profile"
+}
+
 
 resource "aws_iam_role_policy_attachment" "ssm_core" {
   role       = aws_iam_role.ec2_ssm_role.name
@@ -167,7 +164,7 @@ resource "aws_instance" "portfolio" {
   instance_type               = var.instance_type
   subnet_id                   = aws_subnet.public.id
   vpc_security_group_ids      = [aws_security_group.portfolio_sg.id]
-  iam_instance_profile        = aws_iam_instance_profile.portfolio_profile.name
+  iam_instance_profile = data.aws_iam_instance_profile.portfolio_profile.name
   associate_public_ip_address = true
 
   user_data_replace_on_change = true
