@@ -1,0 +1,182 @@
+
+name: Project 2 - Terraform Apply and S3 Deploy
+
+on:
+  push:
+    branches:
+      - project2-s3-simple
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portfolio-project2-s3
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ap-south-1
+      PROJECT_NAME: portfolio-project2-s3
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate website files
+        shell: bash
+        run: |
+          set -euo pipefail
+          for FILE in index.html style.css script.js profile.png project1.jpg project2.jpg; do
+            test -s "$FILE" || {
+              echo "ERROR: Missing or empty file: $FILE"
+              exit 1
+            }
+          done
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Initialize Terraform
+        working-directory: terraform-project2
+        run: terraform init -backend=false -input=false
+
+      - name: Import existing Project 2 resources when present
+        working-directory: terraform-project2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET=$(sed -nE \
+            's/^[[:space:]]*bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+            variables.tfvars | head -n 1)
+
+          if [ -z "$BUCKET" ]; then
+            echo "ERROR: bucket_name missing in variables.tfvars."
+            exit 1
+          fi
+
+          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Website bucket does not exist or is inaccessible."
+            echo "Terraform will attempt initial creation."
+            exit 0
+          fi
+
+          TAG=$(aws s3api get-bucket-tagging \
+            --bucket "$BUCKET" \
+            --query "TagSet[?Key=='Project'].Value | [0]" \
+            --output text 2>/dev/null || true)
+
+          if [ "$TAG" != "$PROJECT_NAME" ]; then
+            echo "ERROR: Bucket exists but does not have the expected Project tag."
+            echo "Refusing to import or modify an unverified bucket."
+            exit 1
+          fi
+
+          echo "Importing the existing Project 2 bucket into temporary state."
+
+          terraform import -input=false \
+            -var-file=variables.tfvars \
+            aws_s3_bucket.portfolio "$BUCKET"
+
+          if aws s3api get-bucket-website --bucket "$BUCKET" >/dev/null 2>&1; then
+            terraform import -input=false \
+              -var-file=variables.tfvars \
+              aws_s3_bucket_website_configuration.portfolio "$BUCKET"
+          fi
+
+          if aws s3api get-public-access-block --bucket "$BUCKET" >/dev/null 2>&1; then
+            terraform import -input=false \
+              -var-file=variables.tfvars \
+              aws_s3_bucket_public_access_block.portfolio "$BUCKET"
+          fi
+
+          if aws s3api get-bucket-policy --bucket "$BUCKET" >/dev/null 2>&1; then
+            terraform import -input=false \
+              -var-file=variables.tfvars \
+              aws_s3_bucket_policy.portfolio "$BUCKET"
+          fi
+
+      - name: Terraform Format and Validate
+        working-directory: terraform-project2
+        run: |
+          terraform fmt -check -recursive
+          terraform validate
+
+      - name: Terraform Plan
+        working-directory: terraform-project2
+        run: |
+          terraform plan \
+            -input=false \
+            -var-file=variables.tfvars \
+            -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform-project2
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Get website details
+        id: website
+        working-directory: terraform-project2
+        shell: bash
+        run: |
+          echo "bucket=$(terraform output -raw website_bucket_name)" >> "$GITHUB_OUTPUT"
+          echo "url=$(terraform output -raw website_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload portfolio files to S3
+        env:
+          WEBSITE_BUCKET: ${{ steps.website.outputs.bucket }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws s3 sync "$GITHUB_WORKSPACE/" "s3://${WEBSITE_BUCKET}/" \
+            --delete \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "terraform/*" \
+            --exclude "terraform-project2/*" \
+            --exclude ".gitignore" \
+            --exclude "README.md" \
+            --exclude "*.tfstate*" \
+            --exclude "*.tfplan" \
+            --exclude "*.pdf"
+
+          echo "Portfolio files uploaded."
+
+      - name: Verify S3 website
+        env:
+          WEBSITE_URL: ${{ steps.website.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for ATTEMPT in $(seq 1 12); do
+            if curl --fail --silent --show-error --max-time 10 \
+              "${WEBSITE_URL}/" -o /tmp/index.html; then
+              if grep -qi '<html' /tmp/index.html; then
+                echo "Website deployment successful!"
+                echo "Website URL: ${WEBSITE_URL}"
+                exit 0
+              fi
+            fi
+
+            sleep 5
+          done
+
+          echo "ERROR: Website verification failed."
+          exit 1
