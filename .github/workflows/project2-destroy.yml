@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_destroy:
-        description: "Type DESTROY to delete the Project 2 website"
+        description: "Type DESTROY to delete the Project 2 website and all its files"
         type: string
         required: true
         default: "NO"
@@ -19,31 +19,42 @@ concurrency:
 
 jobs:
   destroy:
+    name: Empty and Destroy S3 Website
     runs-on: ubuntu-latest
+
     env:
       AWS_REGION: ap-south-1
       PROJECT_NAME: portfolio-project2-s3
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
 
     steps:
+      # 1. Checkout the Project 2 source branch.
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Require explicit confirmation.
       - name: Confirm destruction
         env:
           CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
         shell: bash
         run: |
           set -euo pipefail
+
           if [ "$CONFIRM_DESTROY" != "DESTROY" ]; then
-            echo "ERROR: Enter DESTROY to confirm deletion."
+            echo "ERROR: Enter exactly DESTROY to confirm deletion."
             exit 1
           fi
 
+          echo "Destruction confirmed."
+
+      # 3. Install Terraform.
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.10.5
 
+      # 4. Configure AWS using existing GitHub secrets.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -51,14 +62,18 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # 5. Check the AWS account.
       - name: Verify AWS identity
         run: aws sts get-caller-identity
 
+      # 6. Initialize Terraform without a remote backend.
       - name: Initialize Terraform
         working-directory: terraform-project2
         run: terraform init -backend=false -input=false
 
-      - name: Import existing website resources
+      # 7. Read and verify the intended website bucket.
+      - name: Verify Project 2 website bucket
+        id: bucket
         working-directory: terraform-project2
         shell: bash
         run: |
@@ -69,56 +84,158 @@ jobs:
             variables.tfvars | head -n 1)
 
           if [ -z "$BUCKET" ]; then
-            echo "ERROR: bucket_name missing in variables.tfvars."
+            echo "ERROR: bucket_name is missing from variables.tfvars."
             exit 1
           fi
 
-          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+          if ! aws s3api head-bucket --bucket "$BUCKET"; then
             echo "ERROR: Website bucket does not exist or is inaccessible."
-            echo "No resources were deleted."
             exit 1
           fi
 
           TAG=$(aws s3api get-bucket-tagging \
             --bucket "$BUCKET" \
             --query "TagSet[?Key=='Project'].Value | [0]" \
-            --output text 2>/dev/null || true)
+            --output text)
 
           if [ "$TAG" != "$PROJECT_NAME" ]; then
-            echo "ERROR: Bucket Project tag does not match."
-            echo "Refusing to destroy an unverified bucket."
+            echo "ERROR: Project tag does not match."
+            echo "Refusing to delete an unverified bucket."
             exit 1
           fi
 
-          terraform import -input=false \
+          echo "name=${BUCKET}" >> "$GITHUB_OUTPUT"
+          echo "Verified Project 2 bucket: ${BUCKET}"
+
+      # 8. Import existing resources into temporary Terraform state.
+      - name: Import existing website resources
+        working-directory: terraform-project2
+        env:
+          WEBSITE_BUCKET: ${{ steps.bucket.outputs.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET="$WEBSITE_BUCKET"
+
+          # Import the S3 bucket.
+          terraform import \
+            -input=false \
             -var-file=variables.tfvars \
-            aws_s3_bucket.portfolio "$BUCKET"
+            aws_s3_bucket.portfolio \
+            "$BUCKET"
 
-          if aws s3api get-bucket-website --bucket "$BUCKET" >/dev/null 2>&1; then
-            terraform import -input=false \
+          # Import website configuration when it exists.
+          if aws s3api get-bucket-website \
+            --bucket "$BUCKET" >/dev/null 2>&1; then
+
+            terraform import \
+              -input=false \
               -var-file=variables.tfvars \
-              aws_s3_bucket_website_configuration.portfolio "$BUCKET"
+              aws_s3_bucket_website_configuration.portfolio \
+              "$BUCKET"
           fi
 
-          if aws s3api get-public-access-block --bucket "$BUCKET" >/dev/null 2>&1; then
-            terraform import -input=false \
+          # Import the public access block when configured.
+          if aws s3api get-public-access-block \
+            --bucket "$BUCKET" >/dev/null 2>&1; then
+
+            terraform import \
+              -input=false \
               -var-file=variables.tfvars \
-              aws_s3_bucket_public_access_block.portfolio "$BUCKET"
+              aws_s3_bucket_public_access_block.portfolio \
+              "$BUCKET"
           fi
 
-          if aws s3api get-bucket-policy --bucket "$BUCKET" >/dev/null 2>&1; then
-            terraform import -input=false \
+          # Import the bucket policy when one exists.
+          if aws s3api get-bucket-policy \
+            --bucket "$BUCKET" >/dev/null 2>&1; then
+
+            terraform import \
+              -input=false \
               -var-file=variables.tfvars \
-              aws_s3_bucket_policy.portfolio "$BUCKET"
+              aws_s3_bucket_policy.portfolio \
+              "$BUCKET"
           fi
 
+          echo "Existing website resources imported."
+
+      # 9. Permanently empty the website bucket.
+      # This handles current objects, versions, and delete markers.
+      - name: Empty website bucket
+        env:
+          WEBSITE_BUCKET: ${{ steps.bucket.outputs.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET="$WEBSITE_BUCKET"
+
+          echo "Permanently deleting website objects from: $BUCKET"
+
+          # Delete current visible objects.
+          aws s3 rm "s3://${BUCKET}/" --recursive
+
+          # Delete all remaining versions and delete markers.
+          while true; do
+            aws s3api list-object-versions \
+              --bucket "$BUCKET" \
+              --output json > "$RUNNER_TEMP/object-versions.json"
+
+            jq -c '[
+              (.Versions[]? |
+                {Key: .Key, VersionId: .VersionId}),
+              (.DeleteMarkers[]? |
+                {Key: .Key, VersionId: .VersionId})
+            ]' "$RUNNER_TEMP/object-versions.json" \
+              > "$RUNNER_TEMP/objects-to-delete.json"
+
+            COUNT=$(jq 'length' "$RUNNER_TEMP/objects-to-delete.json")
+
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+
+            jq -c '
+              . as $items |
+              [range(0; ($items | length); 1000) as $i |
+                {
+                  Objects: $items[$i:($i + 1000)],
+                  Quiet: true
+                }]
+            ' "$RUNNER_TEMP/objects-to-delete.json" \
+              > "$RUNNER_TEMP/delete-batches.json"
+
+            while IFS= read -r BATCH; do
+              printf '%s\n' "$BATCH" \
+                > "$RUNNER_TEMP/delete-batch.json"
+
+              aws s3api delete-objects \
+                --bucket "$BUCKET" \
+                --delete "file://$RUNNER_TEMP/delete-batch.json" \
+                > "$RUNNER_TEMP/delete-result.json"
+
+              if jq -e '.Errors | length > 0' \
+                "$RUNNER_TEMP/delete-result.json" >/dev/null; then
+
+                jq '.Errors' "$RUNNER_TEMP/delete-result.json"
+                echo "ERROR: Some S3 object versions could not be deleted."
+                exit 1
+              fi
+            done < <(jq -c '.[]' "$RUNNER_TEMP/delete-batches.json")
+          done
+
+          echo "Website bucket is empty."
+
+      # 10. Check the Terraform configuration.
       - name: Terraform Format and Validate
         working-directory: terraform-project2
         run: |
           terraform fmt -check -recursive
           terraform validate
 
-      - name: Review destroy plan
+      # 11. Generate a destroy plan.
+      - name: Terraform Destroy Plan
         working-directory: terraform-project2
         run: |
           terraform plan \
@@ -127,12 +244,22 @@ jobs:
             -var-file=variables.tfvars \
             -out=tfplan-destroy
 
-      - name: Destroy website infrastructure
+      # 12. Delete Project 2 website infrastructure.
+      - name: Terraform Destroy
         working-directory: terraform-project2
         run: |
+          set -euo pipefail
+
           terraform apply \
             -input=false \
             -auto-approve \
             tfplan-destroy
 
-          echo "Project 2 website resources destroyed."
+          echo "Project 2 S3 website infrastructure destroyed."
+
+          {
+            echo "## Project 2 Destroy Result"
+            echo ""
+            echo "Website bucket and its Terraform-managed website resources were destroyed."
+            echo "No separate Terraform state bucket was created by this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
