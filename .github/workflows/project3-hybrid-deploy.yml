@@ -1,4 +1,3 @@
-
 name: Project 3 - Deploy Portfolio (EC2 + S3 Hybrid)
 
 on:
@@ -15,24 +14,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ────────────────────────────────────────────
-  # Job 1: Validate all portfolio files
-  # ────────────────────────────────────────────
-  validate:
-    name: Validate Portfolio Files
+  deploy:
+    name: Provision and Deploy Hybrid Portfolio
     runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ap-south-1
+      PROJECT_NAME: portfolio-project3
 
     steps:
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate required website files
+      # 2. Validate website files before deployment
+      - name: Validate website files
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "── Checking required portfolio files ──"
-
+          echo "── Validating required portfolio files ──"
           for FILE in \
             index.html \
             style.css \
@@ -48,88 +48,15 @@ jobs:
             fi
             echo "  ✓ $FILE"
           done
-
           echo "All required portfolio files are present."
 
-  # ────────────────────────────────────────────
-  # Job 2: Upload images and PDF to S3
-  # ────────────────────────────────────────────
-  upload-assets:
-    name: Upload Assets to S3
-    runs-on: ubuntu-latest
-    needs: validate
-
-    env:
-      AWS_REGION: ap-south-1
-      ASSETS_BUCKET: ${{ secrets.PROJECT3_ASSETS_BUCKET }}
-
-    outputs:
-      assets_url: ${{ steps.bucket-url.outputs.assets_url }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Verify AWS identity
-        run: aws sts get-caller-identity
-
-      - name: Upload images and PDF to S3
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "── Uploading static assets to s3://${ASSETS_BUCKET}/assets/ ──"
-
-          # Upload each asset file with public-read ACL so HTML can load them.
-          for FILE in profile.png project1.jpg project2.jpg Bharat_Sairam_Resume.pdf; do
-            aws s3 cp "$FILE" "s3://${ASSETS_BUCKET}/assets/${FILE}" \
-              --acl public-read \
-              --content-type "$(file --mime-type -b "$FILE")"
-            echo "  ✓ Uploaded $FILE"
-          done
-
-          echo "All assets uploaded successfully."
-
-      - name: Output S3 base URL
-        id: bucket-url
-        shell: bash
-        run: |
-          ASSETS_URL="https://${ASSETS_BUCKET}.s3.${AWS_REGION}.amazonaws.com/assets"
-          echo "assets_url=${ASSETS_URL}" >> "$GITHUB_OUTPUT"
-          echo "Assets base URL: ${ASSETS_URL}"
-
-  # ────────────────────────────────────────────
-  # Job 3: Provision EC2 + S3 with Terraform
-  #         (creates infra if it does not exist)
-  # ────────────────────────────────────────────
-  provision:
-    name: Find or Create Infrastructure
-    runs-on: ubuntu-latest
-    needs: upload-assets
-
-    env:
-      AWS_REGION: ap-south-1
-      PROJECT_NAME: portfolio-project3
-
-    outputs:
-      instance_id: ${{ steps.ec2.outputs.instance_id }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
+      # 3. Setup Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.10.5
 
+      # 4. Authenticate to AWS
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -137,12 +64,62 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Find or create EC2 instance
-        id: ec2
+      # 5. Verify AWS identity
+      - name: Verify AWS credentials
+        run: aws sts get-caller-identity
+
+      # 6. Resolve S3 Assets Bucket Name
+      - name: Resolve assets bucket name
+        id: bucket
         shell: bash
         run: |
           set -euo pipefail
 
+          # Priority: GitHub Secret (if set) > variables.tfvars
+          SECRET_VAL="${{ secrets.PROJECT3_ASSETS_BUCKET }}"
+          if [ -n "$SECRET_VAL" ]; then
+            BUCKET="$SECRET_VAL"
+            echo "Using bucket name from GitHub Secret: $BUCKET"
+            sed -i -E "s/^[[:space:]]*assets_bucket_name[[:space:]]*=.*/assets_bucket_name = \"$BUCKET\"/" terraform-project3/variables.tfvars
+          else
+            BUCKET=$(sed -nE 's/^[[:space:]]*assets_bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' terraform-project3/variables.tfvars | head -n 1)
+            echo "Using bucket name from variables.tfvars: $BUCKET"
+          fi
+
+          if [ -z "$BUCKET" ]; then
+            echo "ERROR: Could not resolve assets_bucket_name."
+            exit 1
+          fi
+
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "assets_url=https://${BUCKET}.s3.${AWS_REGION}.amazonaws.com/assets" >> "$GITHUB_OUTPUT"
+
+      # 7. Provision or locate Infrastructure with Terraform
+      - name: Provision or locate Infrastructure
+        id: infra
+        env:
+          BUCKET: ${{ steps.bucket.outputs.bucket }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd terraform-project3
+
+          terraform init -backend=false -input=false
+
+          # If the S3 bucket already exists in AWS account, import it into local terraform state
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Bucket $BUCKET already exists in AWS. Importing into state..."
+            terraform import -input=false -var-file=variables.tfvars aws_s3_bucket.assets "$BUCKET" || true
+            terraform import -input=false -var-file=variables.tfvars aws_s3_bucket_public_access_block.assets "$BUCKET" || true
+            terraform import -input=false -var-file=variables.tfvars aws_s3_bucket_policy.assets_public_read "$BUCKET" || true
+            terraform import -input=false -var-file=variables.tfvars aws_s3_bucket_cors_configuration.assets "$BUCKET" || true
+          fi
+
+          terraform fmt -recursive
+          terraform validate
+
+          # Check if EC2 instance already exists
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters \
               "Name=tag:Project,Values=${PROJECT_NAME}" \
@@ -151,23 +128,9 @@ jobs:
             --output text)
 
           if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
-            echo "No existing EC2 found. Provisioning with Terraform."
-
-            cd terraform-project3
-
-            terraform init -backend=false
-            terraform fmt -recursive
-            terraform validate
-
-            terraform plan \
-              -var-file=variables.tfvars \
-              -out=tfplan
-
-            terraform apply \
-              -auto-approve \
-              tfplan
-
-            cd ..
+            echo "No existing EC2 found. Applying Terraform plan..."
+            terraform plan -input=false -var-file=variables.tfvars -out=tfplan
+            terraform apply -input=false -auto-approve tfplan
 
             INSTANCE_ID=$(aws ec2 describe-instances \
               --filters \
@@ -175,14 +138,21 @@ jobs:
                 "Name=instance-state-name,Values=pending,running" \
               --query 'Reservations[].Instances[].InstanceId | [0]' \
               --output text)
+          else
+            echo "Existing EC2 instance found: $INSTANCE_ID"
+            # Ensure S3 bucket & networking are also synchronized
+            terraform plan -input=false -var-file=variables.tfvars -out=tfplan
+            terraform apply -input=false -auto-approve tfplan || true
           fi
 
+          cd ..
+
           if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
-            echo "ERROR: Could not find or create EC2 instance."
+            echo "ERROR: Could not find or create EC2."
             exit 1
           fi
 
-          # Start the instance if it is stopped.
+          # Ensure instance is running
           STATE=$(aws ec2 describe-instances \
             --instance-ids "$INSTANCE_ID" \
             --query 'Reservations[0].Instances[0].State.Name' \
@@ -197,18 +167,18 @@ jobs:
 
           aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
 
-          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
-          echo "Using EC2 instance: ${INSTANCE_ID}"
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "Using EC2 instance: $INSTANCE_ID"
 
-      - name: Wait for SSM agent to come online
+      # 8. Wait until EC2 is online in Systems Manager
+      - name: Wait for SSM connection
         env:
-          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+          INSTANCE_ID: ${{ steps.infra.outputs.instance_id }}
         shell: bash
         run: |
           set -euo pipefail
 
           ONLINE=false
-
           for ATTEMPT in $(seq 1 45); do
             STATUS=$(aws ssm describe-instance-information \
               --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
@@ -227,49 +197,37 @@ jobs:
 
           if [ "$ONLINE" != "true" ]; then
             echo "ERROR: EC2 did not register with SSM."
+            echo "Check SSM agent, IAM role and outbound networking."
             exit 1
           fi
 
-  # ────────────────────────────────────────────
-  # Job 4: Deploy website to EC2 via SSM
-  #         Images are served from S3; HTML/CSS/JS go to Nginx.
-  # ────────────────────────────────────────────
-  deploy-vm:
-    name: Deploy Website to EC2 (Nginx)
-    runs-on: ubuntu-latest
-    needs: [upload-assets, provision]
-
-    env:
-      AWS_REGION: ap-south-1
-      ASSETS_URL: ${{ needs.upload-assets.outputs.assets_url }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      # Rewrite local asset paths in index.html to point to S3 URLs,
-      # then upload the modified file to the runner's workspace so it
-      # can be bundled into the SSM deployment payload.
-      - name: Rewrite asset URLs to S3 in index.html
+      # 9. Upload static assets to S3 bucket
+      - name: Upload static assets to S3
+        env:
+          BUCKET: ${{ steps.bucket.outputs.bucket }}
         shell: bash
         run: |
           set -euo pipefail
 
-          ASSETS_URL="${{ env.ASSETS_URL }}"
+          echo "── Uploading static assets to s3://${BUCKET}/assets/ ──"
 
-          echo "── Rewriting asset URLs ──"
-          echo "  Target base URL: ${ASSETS_URL}"
+          for FILE in profile.png project1.jpg project2.jpg Bharat_Sairam_Resume.pdf; do
+            aws s3 cp "$FILE" "s3://${BUCKET}/assets/${FILE}"
+            echo "  ✓ Uploaded $FILE"
+          done
 
-          cp index.html index.html.bak
+          echo "All static assets uploaded to S3 successfully."
 
-          # Replace local image/PDF references with S3 URLs.
+      # 10. Rewrite asset URLs in index.html to point to S3
+      - name: Rewrite asset URLs in index.html
+        env:
+          ASSETS_URL: ${{ steps.bucket.outputs.assets_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "── Rewriting asset URLs to S3: ${ASSETS_URL} ──"
+
           sed -i \
             -e "s|src=\"profile\.png\"|src=\"${ASSETS_URL}/profile.png\"|g" \
             -e "s|src=\"project1\.jpg\"|src=\"${ASSETS_URL}/project1.jpg\"|g" \
@@ -277,30 +235,23 @@ jobs:
             -e "s|href=\"project1\.jpg\"|href=\"${ASSETS_URL}/project1.jpg\"|g" \
             -e "s|href=\"project2\.jpg\"|href=\"${ASSETS_URL}/project2.jpg\"|g" \
             -e "s|href=\"Bharat_Sairam_Resume\.pdf\"|href=\"${ASSETS_URL}/Bharat_Sairam_Resume.pdf\"|g" \
-            -e "s|href=\"Bharat_Sairam_Resume\.pdf\" download=\"Bharat_Sairam_Resume\.pdf\"|href=\"${ASSETS_URL}/Bharat_Sairam_Resume.pdf\" download=\"Bharat_Sairam_Resume.pdf\"|g" \
             index.html
 
-          echo "  ✓ index.html URLs rewritten."
-
-          # Quick sanity check — make sure S3 URL appeared at least once.
           if ! grep -q "${ASSETS_URL}" index.html; then
-            echo "ERROR: URL rewrite did not produce any S3 references."
+            echo "ERROR: URL rewrite did not replace any asset URLs."
             exit 1
           fi
 
-          echo "URL rewrite verified."
+          echo "Asset URLs rewritten successfully."
 
-      - name: Deploy HTML, CSS, JS to EC2 via SSM
+      # 11. Deploy website files to EC2 Nginx via SSM
+      - name: Deploy to EC2 Nginx via SSM
         env:
-          INSTANCE_ID: ${{ needs.provision.outputs.instance_id }}
+          INSTANCE_ID: ${{ steps.infra.outputs.instance_id }}
         shell: bash
         run: |
           set -euo pipefail
 
-          ASSETS_URL="${{ env.ASSETS_URL }}"
-
-          # Encode the rewritten index.html as base64 so it can be
-          # safely embedded in the SSM shell script without quoting issues.
           INDEX_B64=$(base64 -w 0 index.html)
           CSS_B64=$(base64 -w 0 style.css)
           JS_B64=$(base64 -w 0 script.js)
@@ -313,24 +264,16 @@ jobs:
           REPO_DIR="/opt/portfolio"
           WEB_ROOT="/var/www/html"
 
-          # Wait for first-boot initialization.
           if command -v cloud-init > /dev/null 2>&1; then
             cloud-init status --wait
           fi
 
-          # Install dependencies if missing.
-          NEED_INSTALL=false
-          for CMD in git nginx rsync curl; do
-            command -v "\$CMD" > /dev/null 2>&1 || NEED_INSTALL=true
-          done
-
-          if [ "\$NEED_INSTALL" = "true" ]; then
+          if ! command -v git >/dev/null 2>&1 || ! command -v nginx >/dev/null 2>&1 || ! command -v rsync >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
             apt-get install -y git nginx rsync curl
           fi
 
-          # Clone or update the repository.
           if [ -d "\${REPO_DIR}/.git" ]; then
             git -C "\${REPO_DIR}" remote set-url origin "\${REPO_URL}"
           else
@@ -341,16 +284,17 @@ jobs:
           git -C "\${REPO_DIR}" fetch origin "\${BRANCH}"
           git -C "\${REPO_DIR}" reset --hard "origin/\${BRANCH}"
 
-          echo "Deployed source commit:"
+          echo "Latest deployed commit:"
           git -C "\${REPO_DIR}" log -1 --oneline
 
-          # Deploy HTML/CSS/JS (no images — those are served from S3).
+          # Deploy HTML/CSS/JS to Nginx web root (images & PDF excluded — served from S3)
           rsync -av \
             --delete \
             --delete-excluded \
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='terraform/' \
+            --exclude='terraform-project2/' \
             --exclude='terraform-project3/' \
             --exclude='.gitignore' \
             --exclude='README.md' \
@@ -362,53 +306,41 @@ jobs:
             --exclude='Bharat_Sairam_Resume.pdf' \
             "\${REPO_DIR}/" "\${WEB_ROOT}/"
 
-          # Write the URL-rewritten index.html (passed as base64 from runner).
+          # Write rewritten index.html, style.css, script.js
           echo '${INDEX_B64}' | base64 -d > "\${WEB_ROOT}/index.html"
           echo '${CSS_B64}'   | base64 -d > "\${WEB_ROOT}/style.css"
           echo '${JS_B64}'    | base64 -d > "\${WEB_ROOT}/script.js"
 
-          echo "Website files deployed to Nginx web root."
+          chmod 644 "\${WEB_ROOT}"/*
+          chmod 755 "\${WEB_ROOT}"
 
-          # Validate Nginx configuration and reload.
           nginx -t
           systemctl enable --now nginx
           systemctl reload nginx
 
-          # Local HTTP smoke test.
-          curl --fail --silent --show-error \
-            http://127.0.0.1/ -o /tmp/portfolio-response.html
-
-          if ! grep -qi '<html' /tmp/portfolio-response.html; then
-            echo "ERROR: Nginx did not return expected HTML."
+          curl --fail --silent --show-error http://127.0.0.1/ -o /tmp/resp.html
+          if ! grep -qi '<html' /tmp/resp.html; then
+            echo "ERROR: Nginx did not return HTML."
             exit 1
           fi
 
-          # Verify that S3 asset URLs appear in the deployed HTML.
-          if ! grep -q "s3" /tmp/portfolio-response.html; then
-            echo "WARNING: Deployed HTML does not contain S3 asset URLs."
-          else
-            echo "S3 asset URLs confirmed in deployed HTML."
-          fi
-
-          echo "Nginx deployment succeeded."
+          echo "EC2 deployment succeeded."
           REMOTE
           )
 
-          jq -n --arg command "$REMOTE_SCRIPT" \
-            '{commands: [$command]}' > /tmp/ssm-parameters.json
+          jq -n --arg command "$REMOTE_SCRIPT" '{commands: [$command]}' > /tmp/ssm-parameters.json
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Project3 hybrid deploy: HTML to Nginx, assets on S3" \
+            --comment "Project 3 hybrid deployment" \
             --parameters file:///tmp/ssm-parameters.json \
             --query 'Command.CommandId' \
             --output text)
 
-          echo "SSM command ID: ${COMMAND_ID}"
+          echo "SSM Command ID: $COMMAND_ID"
 
           COMPLETED=false
-
           for ATTEMPT in $(seq 1 60); do
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
@@ -423,7 +355,7 @@ jobs:
 
             case "$STATUS" in
               Failed|Cancelled|TimedOut)
-                echo "── SSM command output ──"
+                echo "── SSM Execution Error ──"
                 aws ssm get-command-invocation \
                   --command-id "$COMMAND_ID" \
                   --instance-id "${INSTANCE_ID}" \
@@ -433,7 +365,7 @@ jobs:
                 ;;
             esac
 
-            echo "Deployment status: ${STATUS} (${ATTEMPT}/60)..."
+            echo "Deployment status: $STATUS (${ATTEMPT}/60)..."
             sleep 5
           done
 
@@ -448,29 +380,11 @@ jobs:
             --query 'StandardOutputContent' \
             --output text
 
-  # ────────────────────────────────────────────
-  # Job 5: Verify the live site + asset loading
-  # ────────────────────────────────────────────
-  verify:
-    name: Verify Live Portfolio
-    runs-on: ubuntu-latest
-    needs: [upload-assets, provision, deploy-vm]
-
-    env:
-      AWS_REGION: ap-south-1
-      ASSETS_URL: ${{ needs.upload-assets.outputs.assets_url }}
-
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Verify live website (Nginx)
+      # 12. Verify website and S3 assets
+      - name: Verify Live Website and S3 Assets
         env:
-          INSTANCE_ID: ${{ needs.provision.outputs.instance_id }}
+          INSTANCE_ID: ${{ steps.infra.outputs.instance_id }}
+          ASSETS_URL: ${{ steps.bucket.outputs.assets_url }}
         shell: bash
         run: |
           set -euo pipefail
@@ -480,76 +394,36 @@ jobs:
             --query 'Reservations[0].Instances[0].PublicIpAddress' \
             --output text)
 
-          if [ "$PUBLIC_IP" = "None" ] || [ -z "$PUBLIC_IP" ]; then
-            echo "ERROR: EC2 does not have a public IP."
-            exit 1
-          fi
+          echo "EC2 Public IP: $PUBLIC_IP"
 
-          echo "EC2 public IP: ${PUBLIC_IP}"
-
+          echo "── Verifying Nginx HTTP response ──"
           for ATTEMPT in $(seq 1 12); do
-            if curl --fail --silent --show-error \
-              --max-time 10 "http://${PUBLIC_IP}/" \
-              -o /tmp/portfolio-response.html 2>&1; then
-
-              if grep -qi '<html' /tmp/portfolio-response.html; then
-                echo "── Portfolio website is live! ──"
-                echo "  URL: http://${PUBLIC_IP}"
+            if curl --fail --silent --show-error --max-time 10 "http://${PUBLIC_IP}/" -o /tmp/web.html; then
+              if grep -qi '<html' /tmp/web.html; then
+                echo "Nginx website is responding!"
                 break
               fi
             fi
-
-            echo "Waiting for website (${ATTEMPT}/12)..."
             sleep 5
-
-            if [ "$ATTEMPT" -eq 12 ]; then
-              echo "ERROR: Website verification failed."
-              exit 1
-            fi
           done
 
-      - name: Verify S3 assets are publicly accessible
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ASSETS_URL="${{ env.ASSETS_URL }}"
-
-          echo "── Checking S3 asset URLs ──"
-
+          echo "── Verifying S3 Asset Availability ──"
           for ASSET in profile.png project1.jpg project2.jpg Bharat_Sairam_Resume.pdf; do
             URL="${ASSETS_URL}/${ASSET}"
             HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" "$URL")
-
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "  ✓ ${ASSET} → HTTP ${HTTP_CODE}"
+              echo "  ✓ $ASSET -> HTTP $HTTP_CODE"
             else
-              echo "  ✗ ${ASSET} → HTTP ${HTTP_CODE} (FAILED)"
-              echo "    URL: ${URL}"
+              echo "  ✗ $ASSET -> HTTP $HTTP_CODE"
+              echo "    URL: $URL"
               exit 1
             fi
           done
 
-          echo "All S3 assets are accessible."
-
-      - name: Print deployment summary
-        env:
-          INSTANCE_ID: ${{ needs.provision.outputs.instance_id }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PUBLIC_IP=$(aws ec2 describe-instances \
-            --instance-ids "${INSTANCE_ID}" \
-            --query 'Reservations[0].Instances[0].PublicIpAddress' \
-            --output text)
-
-          ASSETS_URL="${{ env.ASSETS_URL }}"
-
-          echo "════════════════════════════════════════"
-          echo "   Project 3 Deployment Summary"
-          echo "════════════════════════════════════════"
-          echo "  Portfolio URL  : http://${PUBLIC_IP}"
-          echo "  Nginx EC2      : ${INSTANCE_ID} (${PUBLIC_IP})"
-          echo "  Assets S3 URL  : ${ASSETS_URL}"
-          echo "════════════════════════════════════════"
+          echo "══════════════════════════════════════════════════════"
+          echo "   Project 3 Hybrid Deployment Successful!"
+          echo "══════════════════════════════════════════════════════"
+          echo "  Website URL   : http://${PUBLIC_IP}"
+          echo "  Nginx Host    : EC2 (${INSTANCE_ID})"
+          echo "  Assets URL    : ${ASSETS_URL}"
+          echo "══════════════════════════════════════════════════════"

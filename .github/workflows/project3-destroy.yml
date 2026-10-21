@@ -58,14 +58,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          if aws s3api head-bucket --bucket "${ASSETS_BUCKET}" 2>/dev/null; then
-            echo "Emptying S3 bucket: ${ASSETS_BUCKET}"
-            aws s3 rm "s3://${ASSETS_BUCKET}" --recursive
-            echo "Deleting S3 bucket: ${ASSETS_BUCKET}"
-            aws s3api delete-bucket --bucket "${ASSETS_BUCKET}" --region "${AWS_REGION}"
+          SECRET_VAL="${{ secrets.PROJECT3_ASSETS_BUCKET }}"
+          if [ -n "$SECRET_VAL" ]; then
+            BUCKET="$SECRET_VAL"
+          else
+            BUCKET=$(sed -nE 's/^[[:space:]]*assets_bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' terraform-project3/variables.tfvars | head -n 1)
+          fi
+
+          if [ -n "$BUCKET" ] && aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Emptying S3 bucket: $BUCKET"
+            aws s3 rm "s3://${BUCKET}" --recursive
+            echo "Deleting S3 bucket: $BUCKET"
+            aws s3api delete-bucket --bucket "$BUCKET" --region "${AWS_REGION}"
             echo "S3 bucket deleted."
           else
-            echo "S3 bucket ${ASSETS_BUCKET} not found — skipping."
+            echo "S3 bucket ($BUCKET) not found or already deleted — skipping."
           fi
 
       - name: Terminate EC2 instance

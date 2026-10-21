@@ -135,56 +135,20 @@ resource "aws_security_group" "portfolio_sg" {
 }
 
 # ──────────────────────────────────────────────
-# IAM: EC2 role with SSM + S3 read access
+# IAM: Reuse existing EC2 role and instance profile
 # ──────────────────────────────────────────────
 
-resource "aws_iam_role" "ec2_role" {
-  name = "${var.project_name}-ec2-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-
-  tags = {
-    Project = var.project_name
-  }
+data "aws_iam_role" "ec2_ssm_role" {
+  name = "portfolio-cicd-ssm-role"
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role       = aws_iam_role.ec2_role.name
+  role       = data.aws_iam_role.ec2_ssm_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# Allow EC2 to read objects from the assets S3 bucket.
-resource "aws_iam_role_policy" "s3_read" {
-  name = "${var.project_name}-s3-read"
-  role = aws_iam_role.ec2_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["s3:GetObject", "s3:ListBucket"]
-      Resource = [
-        aws_s3_bucket.assets.arn,
-        "${aws_s3_bucket.assets.arn}/*"
-      ]
-    }]
-  })
-}
-
-resource "aws_iam_instance_profile" "portfolio_profile" {
-  name = "${var.project_name}-instance-profile"
-  role = aws_iam_role.ec2_role.name
-
-  tags = {
-    Project = var.project_name
-  }
+data "aws_iam_instance_profile" "portfolio_profile" {
+  name = "portfolio-cicd-instance-profile"
 }
 
 # ──────────────────────────────────────────────
@@ -291,8 +255,7 @@ resource "aws_instance" "portfolio" {
 
   depends_on = [
     aws_route_table_association.public,
-    aws_iam_role_policy_attachment.ssm_core,
-    aws_iam_role_policy.s3_read
+    aws_iam_role_policy_attachment.ssm_core
   ]
 
   tags = {
