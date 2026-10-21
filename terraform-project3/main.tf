@@ -214,7 +214,7 @@ resource "aws_instance" "portfolio" {
   instance_type               = var.instance_type
   subnet_id                   = aws_subnet.public.id
   vpc_security_group_ids      = [aws_security_group.portfolio_sg.id]
-  iam_instance_profile        = aws_iam_instance_profile.portfolio_profile.name
+  iam_instance_profile        = data.aws_iam_instance_profile.portfolio_profile.name
   associate_public_ip_address = true
 
   user_data_replace_on_change = true
