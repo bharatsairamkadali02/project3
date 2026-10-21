@@ -2,6 +2,9 @@
 name: Project 3 - Destroy Infrastructure
 
 on:
+  push:
+    branches:
+      - project3-destroy
   workflow_dispatch:
     inputs:
       confirm_destroy:
@@ -34,14 +37,17 @@ jobs:
       - name: Confirm destruction
         env:
           CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
+          EVENT_NAME: ${{ github.event_name }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$CONFIRM_DESTROY" != "DESTROY" ]; then
-            echo "ERROR: Type DESTROY (all caps) to confirm deletion."
-            exit 1
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$CONFIRM_DESTROY" != "DESTROY" ]; then
+              echo "ERROR: Type DESTROY (all caps) to confirm deletion."
+              exit 1
+            fi
           fi
-          echo "Destruction confirmed. Proceeding to tear down Project 3 resources."
+          echo "Destruction authorized. Proceeding to tear down Project 3 resources."
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
