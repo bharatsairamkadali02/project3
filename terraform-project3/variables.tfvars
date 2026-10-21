@@ -1,0 +1,6 @@
+aws_region         = "ap-south-1"
+project_name       = "portfolio-project3"
+instance_type      = "t3.micro"
+assets_bucket_name = "portfolio-project3-assets-bharat"
+github_repo_url    = "https://github.com/bharatsairamkadali02/project3.git"
+github_branch      = "project3-hybrid-vm-s3"

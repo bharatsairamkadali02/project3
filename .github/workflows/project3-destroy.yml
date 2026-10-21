@@ -1,0 +1,216 @@
+
+name: Project 3 - Destroy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: "Type DESTROY to delete all Project 3 resources"
+        type: string
+        required: true
+        default: "NO"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portfolio-project3-hybrid
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    name: Destroy EC2 + S3 Infrastructure
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ap-south-1
+      PROJECT_NAME: portfolio-project3
+      ASSETS_BUCKET: ${{ secrets.PROJECT3_ASSETS_BUCKET }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Confirm destruction
+        env:
+          CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_DESTROY" != "DESTROY" ]; then
+            echo "ERROR: Type DESTROY (all caps) to confirm deletion."
+            exit 1
+          fi
+          echo "Destruction confirmed. Proceeding to tear down Project 3 resources."
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Empty and delete S3 assets bucket
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if aws s3api head-bucket --bucket "${ASSETS_BUCKET}" 2>/dev/null; then
+            echo "Emptying S3 bucket: ${ASSETS_BUCKET}"
+            aws s3 rm "s3://${ASSETS_BUCKET}" --recursive
+            echo "Deleting S3 bucket: ${ASSETS_BUCKET}"
+            aws s3api delete-bucket --bucket "${ASSETS_BUCKET}" --region "${AWS_REGION}"
+            echo "S3 bucket deleted."
+          else
+            echo "S3 bucket ${ASSETS_BUCKET} not found — skipping."
+          fi
+
+      - name: Terminate EC2 instance
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Project,Values=${PROJECT_NAME}" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId | [0]' \
+            --output text)
+
+          if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "No running EC2 instance found — skipping."
+          else
+            echo "Terminating EC2 instance: ${INSTANCE_ID}"
+            aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+            aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
+            echo "EC2 instance terminated."
+          fi
+
+      - name: Delete IAM instance profile and role
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROFILE_NAME="${PROJECT_NAME}-instance-profile"
+          ROLE_NAME="${PROJECT_NAME}-ec2-role"
+
+          # Remove role from instance profile.
+          if aws iam get-instance-profile --instance-profile-name "$PROFILE_NAME" > /dev/null 2>&1; then
+            aws iam remove-role-from-instance-profile \
+              --instance-profile-name "$PROFILE_NAME" \
+              --role-name "$ROLE_NAME" 2>/dev/null || true
+            aws iam delete-instance-profile --instance-profile-name "$PROFILE_NAME"
+            echo "Deleted instance profile: ${PROFILE_NAME}"
+          fi
+
+          # Detach managed policies from role.
+          if aws iam get-role --role-name "$ROLE_NAME" > /dev/null 2>&1; then
+            POLICIES=$(aws iam list-attached-role-policies \
+              --role-name "$ROLE_NAME" \
+              --query 'AttachedPolicies[].PolicyArn' \
+              --output text)
+
+            for ARN in $POLICIES; do
+              aws iam detach-role-policy --role-name "$ROLE_NAME" --policy-arn "$ARN"
+            done
+
+            # Delete inline policies.
+            INLINE=$(aws iam list-role-policies \
+              --role-name "$ROLE_NAME" \
+              --query 'PolicyNames[]' \
+              --output text)
+
+            for POL in $INLINE; do
+              aws iam delete-role-policy --role-name "$ROLE_NAME" --policy-name "$POL"
+            done
+
+            aws iam delete-role --role-name "$ROLE_NAME"
+            echo "Deleted IAM role: ${ROLE_NAME}"
+          fi
+
+      - name: Delete VPC and networking resources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Project,Values=${PROJECT_NAME}" \
+            --query 'Vpcs[0].VpcId' \
+            --output text)
+
+          if [ "$VPC_ID" = "None" ] || [ -z "$VPC_ID" ]; then
+            echo "No VPC found for project ${PROJECT_NAME} — skipping network cleanup."
+            exit 0
+          fi
+
+          echo "Cleaning up VPC: ${VPC_ID}"
+
+          # Delete subnets.
+          SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=${VPC_ID}" \
+            --query 'Subnets[].SubnetId' \
+            --output text)
+          for SN in $SUBNETS; do
+            aws ec2 delete-subnet --subnet-id "$SN"
+            echo "  Deleted subnet: ${SN}"
+          done
+
+          # Delete route table associations and route tables (except main).
+          RTS=$(aws ec2 describe-route-tables \
+            --filters \
+              "Name=vpc-id,Values=${VPC_ID}" \
+              "Name=tag:Project,Values=${PROJECT_NAME}" \
+            --query 'RouteTables[].RouteTableId' \
+            --output text)
+          for RT in $RTS; do
+            ASSOC_IDS=$(aws ec2 describe-route-tables \
+              --route-table-ids "$RT" \
+              --query 'RouteTables[0].Associations[?!Main].RouteTableAssociationId' \
+              --output text)
+            for ASSOC in $ASSOC_IDS; do
+              aws ec2 disassociate-route-table --association-id "$ASSOC"
+            done
+            aws ec2 delete-route-table --route-table-id "$RT"
+            echo "  Deleted route table: ${RT}"
+          done
+
+          # Detach and delete internet gateways.
+          IGWS=$(aws ec2 describe-internet-gateways \
+            --filters "Name=attachment.vpc-id,Values=${VPC_ID}" \
+            --query 'InternetGateways[].InternetGatewayId' \
+            --output text)
+          for IGW in $IGWS; do
+            aws ec2 detach-internet-gateway --internet-gateway-id "$IGW" --vpc-id "$VPC_ID"
+            aws ec2 delete-internet-gateway --internet-gateway-id "$IGW"
+            echo "  Deleted internet gateway: ${IGW}"
+          done
+
+          # Delete security groups (skip default).
+          SGS=$(aws ec2 describe-security-groups \
+            --filters \
+              "Name=vpc-id,Values=${VPC_ID}" \
+              "Name=tag:Project,Values=${PROJECT_NAME}" \
+            --query 'SecurityGroups[].GroupId' \
+            --output text)
+          for SG in $SGS; do
+            aws ec2 delete-security-group --group-id "$SG"
+            echo "  Deleted security group: ${SG}"
+          done
+
+          # Delete the VPC.
+          aws ec2 delete-vpc --vpc-id "$VPC_ID"
+          echo "Deleted VPC: ${VPC_ID}"
+
+      - name: Confirm cleanup
+        run: |
+          echo "════════════════════════════════════════"
+          echo "   Project 3 Resources Destroyed"
+          echo "════════════════════════════════════════"
+          echo "  ✓ S3 assets bucket emptied and deleted"
+          echo "  ✓ EC2 instance terminated"
+          echo "  ✓ IAM role and instance profile removed"
+          echo "  ✓ VPC, subnets, IGW, and SGs removed"
+          echo "════════════════════════════════════════"
