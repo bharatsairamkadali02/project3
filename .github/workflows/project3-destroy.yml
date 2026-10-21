@@ -155,6 +155,19 @@ jobs:
 
           echo "Cleaning up VPC: ${VPC_ID}"
 
+          # Wait for network interfaces (ENIs) from terminated instances to be released
+          for i in $(seq 1 30); do
+            ENIS=$(aws ec2 describe-network-interfaces \
+              --filters "Name=vpc-id,Values=${VPC_ID}" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' \
+              --output text 2>/dev/null || true)
+            if [ -z "$ENIS" ] || [ "$ENIS" = "None" ]; then
+              break
+            fi
+            echo "Waiting for network interfaces to be released ($i/30)..."
+            sleep 5
+          done
+
           # Delete subnets.
           SUBNETS=$(aws ec2 describe-subnets \
             --filters "Name=vpc-id,Values=${VPC_ID}" \
